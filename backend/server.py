@@ -5,6 +5,8 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 import os
+import json
+import base64
 import uuid
 import logging
 import asyncio
@@ -15,6 +17,9 @@ import jwt
 import bcrypt
 import requests
 import resend
+from pywebpush import webpush, WebPushException
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 from fastapi import (
     FastAPI, APIRouter, Depends, HTTPException, Request, Response,
@@ -45,9 +50,26 @@ APP_NAME = "robotics-hub"
 
 RESEND_API_KEY = os.environ.get('RESEND_API_KEY', '')
 SENDER_EMAIL = os.environ.get('SENDER_EMAIL', 'onboarding@resend.dev')
-TEXTBEE_API_KEY = os.environ.get('TEXTBEE_API_KEY', '')
-TEXTBEE_DEVICE_ID = os.environ.get('TEXTBEE_DEVICE_ID', '')
-TEXTBEE_URL = "https://api.textbee.dev/api/v1"
+
+VAPID_PUBLIC_KEY = os.environ.get('VAPID_PUBLIC_KEY', '')
+VAPID_PRIVATE_KEY_B64 = os.environ.get('VAPID_PRIVATE_KEY_B64', '')
+VAPID_CLAIM_EMAIL = os.environ.get('VAPID_CLAIM_EMAIL', 'mailto:admin@example.com')
+VAPID_PEM_PATH = str(ROOT_DIR / 'vapid_private.pem')
+
+# US carrier email-to-SMS gateways (free, best-effort)
+CARRIER_GATEWAYS = {
+    "verizon": "vtext.com",
+    "att": "txt.att.net",
+    "tmobile": "tmomail.net",
+    "sprint": "messaging.sprintpcs.com",
+    "boost": "sms.myboostmobile.com",
+    "cricket": "sms.cricketwireless.net",
+    "uscellular": "email.uscc.net",
+    "metropcs": "mymetropcs.com",
+    "googlefi": "msg.fi.google.com",
+    "xfinity": "vtext.com",
+    "virgin": "vmobl.com",
+}
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("robotics-hub")
@@ -123,6 +145,7 @@ def serialize_user(user: dict) -> dict:
         "name": user.get("name", ""),
         "role": user.get("role", "member"),
         "phone": user.get("phone", ""),
+        "carrier": user.get("carrier", ""),
         "email_notifications": user.get("email_notifications", True),
         "sms_notifications": user.get("sms_notifications", False),
         "created_at": user.get("created_at"),
@@ -208,51 +231,168 @@ def _send_email_sync(to_email: str, subject: str, html: str):
         logger.error(f"[email failed] to={to_email} err={e}")
 
 
-def _send_sms_sync(to_phone: str, body: str):
-    if not (TEXTBEE_API_KEY and TEXTBEE_DEVICE_ID):
-        logger.info(f"[sms skipped - no key] to={to_phone}")
+def _send_email_plain_sync(to_email: str, subject: str, text: str):
+    """Plain-text email, used for email-to-SMS carrier gateways."""
+    if not RESEND_API_KEY:
+        logger.info(f"[sms-email skipped - no key] to={to_email}")
         return
     try:
-        resp = requests.post(
-            f"{TEXTBEE_URL}/gateway/devices/{TEXTBEE_DEVICE_ID}/send-sms",
-            headers={"x-api-key": TEXTBEE_API_KEY},
-            json={"recipients": [to_phone], "message": body},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        logger.info(f"[sms sent] to={to_phone}")
+        resend.api_key = RESEND_API_KEY
+        resend.Emails.send({"from": SENDER_EMAIL, "to": [to_email], "subject": subject, "text": text})
+        logger.info(f"[sms-email sent] to={to_email}")
     except Exception as e:
-        logger.error(f"[sms failed] to={to_phone} err={e}")
+        logger.error(f"[sms-email failed] to={to_email} err={e}")
+
+
+def _normalize_phone(phone: str) -> str:
+    return "".join(ch for ch in (phone or "") if ch.isdigit())[-10:]
+
+
+def _send_webpush_sync(subscription_info: dict, payload: dict):
+    if not (VAPID_PUBLIC_KEY and os.path.exists(VAPID_PEM_PATH)):
+        return False
+    try:
+        webpush(
+            subscription_info=subscription_info,
+            data=json.dumps(payload),
+            vapid_private_key=VAPID_PEM_PATH,
+            vapid_claims={"sub": VAPID_CLAIM_EMAIL},
+        )
+        return True
+    except WebPushException as e:
+        # 404/410 -> expired subscription, signal for cleanup
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        if status in (404, 410):
+            return "expired"
+        logger.error(f"[webpush failed] {e}")
+        return False
+    except Exception as e:
+        logger.error(f"[webpush error] {e}")
+        return False
 
 
 def _email_template(title: str, body: str) -> str:
     return f"""
     <div style="font-family:Arial,sans-serif;background:#f4f6fb;padding:24px;">
-      <div style="max-width:520px;margin:0 auto;background:#ffffff;border-radius:14px;overflow:hidden;border:1px solid #e6e9f0;">
+      <div style="max-width:560px;margin:0 auto;background:#ffffff;border-radius:14px;overflow:hidden;border:1px solid #e6e9f0;">
         <div style="background:#1d4ed8;padding:20px 28px;color:#fff;font-size:18px;font-weight:bold;">Robotics Team Hub</div>
         <div style="padding:28px;color:#1a1a1a;">
           <h2 style="margin:0 0 12px;font-size:20px;">{title}</h2>
-          <p style="font-size:15px;line-height:1.6;color:#333;">{body}</p>
+          <div style="font-size:15px;line-height:1.6;color:#333;">{body}</div>
         </div>
-        <div style="padding:16px 28px;background:#f9fafb;color:#888;font-size:12px;">You are receiving this because notifications are enabled in your Robotics Hub profile.</div>
+        <div style="padding:16px 28px;background:#f9fafb;color:#888;font-size:12px;">You receive this weekly digest because email notifications are enabled in your Robotics Hub profile.</div>
       </div>
     </div>"""
 
 
-async def notify_team(subject: str, short_text: str, html_body: str, exclude_user_id: Optional[str] = None,
-                      roles: Optional[List[str]] = None):
-    query = {}
-    if roles:
-        query["role"] = {"$in": roles}
-    users = await db.users.find(query).to_list(1000)
-    html = _email_template(subject, html_body)
+async def _push_to_user(user_id: str, payload: dict):
+    subs = await db.push_subscriptions.find({"user_id": user_id}).to_list(50)
+    for s in subs:
+        result = await asyncio.to_thread(_send_webpush_sync, s["subscription"], payload)
+        if result == "expired":
+            await db.push_subscriptions.delete_one({"endpoint": s["endpoint"]})
+
+
+async def notify_new_message(channel: dict, msg: dict):
+    """Web push + email-to-SMS to users with access to the channel (except sender)."""
+    channel_id = channel["id"]
+    sender_id = msg["user_id"]
+    # recipients: users who can see this channel
+    users = await db.users.find({}).to_list(1000)
+    title = f"#{channel['name']}"
+    preview = msg.get("text") or "Shared a file"
+    body_text = f"{msg['user_name']}: {preview}"[:160]
+    payload = {"title": title, "body": body_text, "url": "/chat"}
     for u in users:
-        if exclude_user_id and str(u["_id"]) == exclude_user_id:
+        uid = str(u["_id"])
+        if uid == sender_id:
             continue
-        if u.get("email_notifications", True) and u.get("email"):
-            asyncio.create_task(asyncio.to_thread(_send_email_sync, u["email"], subject, html))
-        if u.get("sms_notifications", False) and u.get("phone"):
-            asyncio.create_task(asyncio.to_thread(_send_sms_sync, u["phone"], short_text))
+        if not channel_visible_to(channel_id, u.get("role")):
+            continue
+        # web push (always on if subscribed)
+        await _push_to_user(uid, payload)
+        # email-to-SMS
+        if u.get("sms_notifications") and u.get("phone") and u.get("carrier") in CARRIER_GATEWAYS:
+            digits = _normalize_phone(u["phone"])
+            if len(digits) == 10:
+                addr = f"{digits}@{CARRIER_GATEWAYS[u['carrier']]}"
+                asyncio.create_task(asyncio.to_thread(_send_email_plain_sync, addr, title, body_text))
+
+
+# ---------------------------------------------------------------------------
+# Weekly digest (Wednesdays 10:00 America/Phoenix)
+# ---------------------------------------------------------------------------
+async def build_and_send_weekly_digest():
+    logger.info("Running weekly digest job")
+    week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    week_ahead = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+
+    # New messages per channel (this week)
+    pipeline = [
+        {"$match": {"created_at": {"$gte": week_ago}}},
+        {"$group": {"_id": "$channel_id", "count": {"$sum": 1}}},
+    ]
+    msg_counts = {d["_id"]: d["count"] async for d in db.messages.aggregate(pipeline)}
+
+    new_files = await db.files.find(
+        {"is_deleted": False, "created_at": {"$gte": week_ago}}, {"_id": 0}
+    ).sort("created_at", -1).to_list(50)
+
+    upcoming = await db.events.find(
+        {"date": {"$gte": now_iso, "$lte": week_ahead}}, {"_id": 0}
+    ).sort("date", 1).to_list(50)
+
+    channel_name = {c["id"]: c for c in CHANNELS}
+
+    users = await db.users.find({"email_notifications": True}).to_list(1000)
+    for u in users:
+        if not u.get("email"):
+            continue
+        role = u.get("role")
+        # messages section respecting visibility
+        rows = []
+        for cid, cnt in msg_counts.items():
+            ch = channel_name.get(cid)
+            if not ch or not channel_visible_to(cid, role):
+                continue
+            label = ch["name"] if ch["program"] == "private" else f"{ch['program_label']} · {ch['name']}"
+            rows.append(f"<li><b>{cnt}</b> new in {label}</li>")
+        msgs_html = f"<ul>{''.join(rows)}</ul>" if rows else "<p>No new messages this week.</p>"
+
+        files_html = (
+            "<ul>" + "".join(f"<li>{f['original_filename']} <span style='color:#888'>· {f['uploader_name']}</span></li>" for f in new_files) + "</ul>"
+            if new_files else "<p>No new files this week.</p>"
+        )
+
+        events_html = (
+            "<ul>" + "".join(
+                f"<li><b>{e['title']}</b> — {datetime.fromisoformat(e['date']).strftime('%a %b %d, %I:%M %p')}"
+                + (f" @ {e['location']}" if e.get('location') else "") + "</li>"
+                for e in upcoming
+            ) + "</ul>"
+            if upcoming else "<p>No events in the next 7 days.</p>"
+        )
+
+        body = f"""
+          <h3 style="margin:18px 0 6px;">💬 New Messages</h3>{msgs_html}
+          <h3 style="margin:18px 0 6px;">📁 New Files</h3>{files_html}
+          <h3 style="margin:18px 0 6px;">📅 Upcoming Events</h3>{events_html}
+        """
+        html = _email_template(f"Your Weekly Team Digest", body)
+        asyncio.create_task(asyncio.to_thread(_send_email_sync, u["email"], "Robotics Hub — Weekly Digest", html))
+
+
+def _send_email_sync(to_email: str, subject: str, html: str):
+    if not RESEND_API_KEY:
+        logger.info(f"[email skipped - no key] to={to_email} subject={subject}")
+        return
+    try:
+        resend.api_key = RESEND_API_KEY
+        resend.Emails.send({"from": SENDER_EMAIL, "to": [to_email], "subject": subject, "html": html})
+        logger.info(f"[email sent] to={to_email}")
+    except Exception as e:
+        logger.error(f"[email failed] to={to_email} err={e}")
 
 
 # ---------------------------------------------------------------------------
@@ -285,8 +425,18 @@ class EventCreate(BaseModel):
 class SettingsUpdate(BaseModel):
     name: Optional[str] = None
     phone: Optional[str] = None
+    carrier: Optional[str] = None
     email_notifications: Optional[bool] = None
     sms_notifications: Optional[bool] = None
+
+
+class PushSubscription(BaseModel):
+    endpoint: str
+    keys: dict
+
+
+class PushUnsubscribe(BaseModel):
+    endpoint: str
 
 
 class RoleUpdate(BaseModel):
@@ -352,6 +502,8 @@ async def update_settings(req: SettingsUpdate, user: dict = Depends(get_current_
         updates["name"] = req.name.strip()
     if req.phone is not None:
         updates["phone"] = req.phone.strip()
+    if req.carrier is not None:
+        updates["carrier"] = req.carrier.strip()
     if req.email_notifications is not None:
         updates["email_notifications"] = req.email_notifications
     if req.sms_notifications is not None:
@@ -409,7 +561,54 @@ async def post_message(channel_id: str, req: MessageCreate, user: dict = Depends
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.messages.insert_one(dict(msg))
+    channel = next((c for c in CHANNELS if c["id"] == channel_id), None)
+    if channel:
+        asyncio.create_task(notify_new_message(channel, msg))
     return msg
+
+
+# ---------------------------------------------------------------------------
+# Web Push subscriptions
+# ---------------------------------------------------------------------------
+@api_router.get("/push/public-key")
+async def push_public_key(user: dict = Depends(get_current_user)):
+    return {"publicKey": VAPID_PUBLIC_KEY}
+
+
+@api_router.post("/push/subscribe")
+async def push_subscribe(sub: PushSubscription, user: dict = Depends(get_current_user)):
+    doc = {
+        "user_id": str(user["_id"]),
+        "endpoint": sub.endpoint,
+        "subscription": {"endpoint": sub.endpoint, "keys": sub.keys},
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.push_subscriptions.update_one(
+        {"endpoint": sub.endpoint}, {"$set": doc}, upsert=True
+    )
+    return {"ok": True}
+
+
+@api_router.post("/push/unsubscribe")
+async def push_unsubscribe(req: PushUnsubscribe, user: dict = Depends(get_current_user)):
+    await db.push_subscriptions.delete_one({"endpoint": req.endpoint, "user_id": str(user["_id"])})
+    return {"ok": True}
+
+
+@api_router.get("/push/status")
+async def push_status(endpoint: Optional[str] = None, user: dict = Depends(get_current_user)):
+    count = await db.push_subscriptions.count_documents({"user_id": str(user["_id"])})
+    subscribed = False
+    if endpoint:
+        subscribed = await db.push_subscriptions.find_one({"endpoint": endpoint}) is not None
+    return {"device_count": count, "subscribed": subscribed}
+
+
+@api_router.post("/digest/send-now")
+async def send_digest_now(user: dict = Depends(require_roles("owner"))):
+    """Owner-only: trigger the weekly digest immediately (for testing/manual sends)."""
+    await build_and_send_weekly_digest()
+    return {"ok": True, "message": "Weekly digest sent to opted-in members."}
 
 
 # ---------------------------------------------------------------------------
@@ -527,9 +726,6 @@ async def create_event(req: EventCreate, user: dict = Depends(require_roles("own
     }
     await db.events.insert_one(dict(ev))
     ev.pop("_id", None)
-    body = f"<b>{req.title}</b><br>{req.date}{(' &middot; ' + req.location) if req.location else ''}<br><br>{req.description}"
-    sms = f"New Robotics event: {req.title} on {req.date}" + (f" @ {req.location}" if req.location else "")
-    await notify_team(f"New Event: {req.title}", sms, body, exclude_user_id=str(user["_id"]))
     return ev
 
 
@@ -611,6 +807,16 @@ async def root():
 @app.on_event("startup")
 async def startup():
     await db.users.create_index("email", unique=True)
+    await db.push_subscriptions.create_index("endpoint", unique=True)
+    # Write VAPID private key PEM to disk for pywebpush
+    if VAPID_PRIVATE_KEY_B64:
+        try:
+            pem = base64.b64decode(VAPID_PRIVATE_KEY_B64)
+            with open(VAPID_PEM_PATH, "wb") as fh:
+                fh.write(pem)
+            logger.info("VAPID key ready")
+        except Exception as e:
+            logger.error(f"VAPID key write failed: {e}")
     # Seed owner
     existing = await db.users.find_one({"email": OWNER_EMAIL})
     if existing is None:
@@ -620,6 +826,7 @@ async def startup():
             "name": OWNER_NAME,
             "role": "owner",
             "phone": "",
+            "carrier": "",
             "email_notifications": True,
             "sms_notifications": False,
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -635,6 +842,19 @@ async def startup():
         logger.info("Storage initialized")
     except Exception as e:
         logger.error(f"Storage init failed: {e}")
+    # Weekly digest scheduler — Wednesdays 10:00 America/Phoenix
+    try:
+        scheduler = AsyncIOScheduler(timezone="America/Phoenix")
+        scheduler.add_job(
+            build_and_send_weekly_digest,
+            CronTrigger(day_of_week="wed", hour=10, minute=0, timezone="America/Phoenix"),
+            id="weekly_digest", replace_existing=True,
+        )
+        scheduler.start()
+        app.state.scheduler = scheduler
+        logger.info("Weekly digest scheduler started (Wed 10:00 America/Phoenix)")
+    except Exception as e:
+        logger.error(f"Scheduler start failed: {e}")
 
 
 app.include_router(api_router)

@@ -338,3 +338,97 @@ class TestDashboard:
         b = r.json()
         for k in ("file_count", "message_count", "member_count", "recent_files"):
             assert k in b
+
+
+
+# ---------------- NEW: Web Push endpoints ----------------
+class TestWebPush:
+    SUB = {
+        "endpoint": f"https://example.com/push/{RUN_ID}",
+        "keys": {"p256dh": "BFsP_HggwotuhL7tXWB8jza5R-NaLFXlx1hzd9ofrEIHhbWj6AZcLF2oPMCRrpAEFKgeNrCdgCIJljTMikh1LfM",
+                 "auth": "abcdefghijklmnop12345678"}
+    }
+
+    def test_public_key(self, member_token):
+        r = requests.get(f"{API}/push/public-key", headers=_auth_headers(member_token))
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert "publicKey" in body
+        assert isinstance(body["publicKey"], str)
+        assert len(body["publicKey"]) == 87, f"Expected 87 chars, got {len(body['publicKey'])}"
+
+    def test_subscribe(self, member_token):
+        r = requests.post(f"{API}/push/subscribe", headers=_auth_headers(member_token), json=self.SUB)
+        assert r.status_code == 200, r.text
+
+    def test_status_subscribed(self, member_token):
+        r = requests.get(f"{API}/push/status",
+                         headers=_auth_headers(member_token),
+                         params={"endpoint": self.SUB["endpoint"]})
+        assert r.status_code == 200
+        body = r.json()
+        assert body.get("subscribed") is True
+        assert body.get("device_count", 0) >= 1
+
+    def test_unsubscribe(self, member_token):
+        r = requests.post(f"{API}/push/unsubscribe", headers=_auth_headers(member_token),
+                          json={"endpoint": self.SUB["endpoint"]})
+        assert r.status_code == 200
+        # status should now be false
+        r2 = requests.get(f"{API}/push/status", headers=_auth_headers(member_token),
+                          params={"endpoint": self.SUB["endpoint"]})
+        assert r2.status_code == 200
+        assert r2.json().get("subscribed") is False
+
+
+# ---------------- NEW: Posting with notifications still fast & 200 ----------------
+class TestPostMessageWithNotifications:
+    def test_post_vex_programming(self, member_token):
+        start = time.time()
+        r = requests.post(f"{API}/channels/vex-programming/messages",
+                          headers=_auth_headers(member_token), json={"text": f"notif-test {RUN_ID}"})
+        elapsed = time.time() - start
+        assert r.status_code == 200, r.text
+        assert elapsed < 5.0, f"Post took {elapsed:.2f}s (notifications must be background)"
+
+    def test_post_members_only_as_member(self, member_token):
+        r = requests.post(f"{API}/channels/members-only/messages",
+                          headers=_auth_headers(member_token), json={"text": f"members-only {RUN_ID}"})
+        assert r.status_code == 200, r.text
+
+
+# ---------------- NEW: Settings carrier field ----------------
+class TestSettingsCarrier:
+    def test_me_has_carrier_field(self, member_token):
+        r = requests.get(f"{API}/auth/me", headers=_auth_headers(member_token))
+        assert r.status_code == 200
+        assert "carrier" in r.json(), "GET /auth/me missing 'carrier' field"
+
+    def test_update_carrier_persists(self, member_token):
+        r = requests.put(f"{API}/auth/me/settings", headers=_auth_headers(member_token),
+                         json={"carrier": "verizon", "phone": "+15555550123"})
+        assert r.status_code == 200, r.text
+        assert r.json().get("carrier") == "verizon"
+        # confirm via /me
+        r2 = requests.get(f"{API}/auth/me", headers=_auth_headers(member_token))
+        assert r2.status_code == 200
+        assert r2.json().get("carrier") == "verizon"
+        assert r2.json().get("phone") == "+15555550123"
+
+
+# ---------------- NEW: Weekly digest manual trigger ----------------
+class TestDigest:
+    def test_member_forbidden(self, member_token):
+        r = requests.post(f"{API}/digest/send-now", headers=_auth_headers(member_token))
+        assert r.status_code == 403
+
+    def test_mentor_forbidden(self, mentor_token):
+        r = requests.post(f"{API}/digest/send-now", headers=_auth_headers(mentor_token))
+        assert r.status_code == 403
+
+    def test_owner_ok(self, owner_token):
+        r = requests.post(f"{API}/digest/send-now", headers=_auth_headers(owner_token))
+        # must not 500 even if Resend sandbox blocks delivery
+        assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
+        body = r.json()
+        assert body.get("ok") is True
