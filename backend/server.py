@@ -5,6 +5,7 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 import os
+import re
 import json
 import base64
 import uuid
@@ -616,6 +617,131 @@ async def send_digest_now(user: dict = Depends(require_roles("owner"))):
     """Owner-only: trigger the weekly digest immediately (for testing/manual sends)."""
     await build_and_send_weekly_digest()
     return {"ok": True, "message": "Weekly digest sent to opted-in members."}
+
+
+# ---------------------------------------------------------------------------
+# Direct messages (person-to-person private chat)
+# ---------------------------------------------------------------------------
+def dm_conversation_id(a: str, b: str) -> str:
+    return "dm:" + ":".join(sorted([a, b]))
+
+
+async def notify_dm(recipient: dict, sender: dict, msg: dict):
+    rid = str(recipient["_id"])
+    sender_name = sender.get("name", "")
+    title = f"DM from {sender_name}"
+    preview = msg.get("text") or "Sent a file"
+    body_text = f"{sender_name}: {preview}"[:160]
+    payload = {"title": title, "body": body_text, "url": "/chat"}
+    await _push_to_user(rid, payload)
+    if recipient.get("sms_notifications") and recipient.get("phone") and recipient.get("carrier") in CARRIER_GATEWAYS:
+        digits = _normalize_phone(recipient["phone"])
+        if len(digits) == 10:
+            addr = f"{digits}@{CARRIER_GATEWAYS[recipient['carrier']]}"
+            asyncio.create_task(asyncio.to_thread(_send_email_plain_sync, addr, title, body_text))
+
+
+@api_router.get("/users/search")
+async def search_users(q: Optional[str] = None, user: dict = Depends(get_current_user)):
+    me = str(user["_id"])
+    query = {}
+    if q:
+        rx = re.escape(q.strip())
+        query = {"$or": [
+            {"name": {"$regex": rx, "$options": "i"}},
+            {"email": {"$regex": rx, "$options": "i"}},
+        ]}
+    users = await db.users.find(query).sort("name", 1).to_list(50)
+    return [
+        {"id": str(u["_id"]), "name": u.get("name", ""), "role": u.get("role", "member"), "email": u["email"]}
+        for u in users if str(u["_id"]) != me
+    ][:20]
+
+
+@api_router.get("/dm/threads")
+async def dm_threads(user: dict = Depends(get_current_user)):
+    me = str(user["_id"])
+    msgs = await db.dm_messages.find(
+        {"$or": [{"sender_id": me}, {"recipient_id": me}]}, {"_id": 0}
+    ).sort("created_at", -1).to_list(2000)
+    threads = {}
+    for m in msgs:
+        other = m["recipient_id"] if m["sender_id"] == me else m["sender_id"]
+        if other not in threads:
+            threads[other] = m  # latest first due to desc sort
+    result = []
+    for other_id, last in threads.items():
+        try:
+            ou = await db.users.find_one({"_id": ObjectId(other_id)})
+        except Exception:
+            ou = None
+        if not ou:
+            continue
+        result.append({
+            "user_id": other_id,
+            "name": ou.get("name", ""),
+            "role": ou.get("role", "member"),
+            "last_text": last.get("text") or "Attachment",
+            "last_at": last["created_at"],
+        })
+    result.sort(key=lambda x: x["last_at"], reverse=True)
+    return result
+
+
+async def _resolve_other(other_id: str, me: str):
+    if other_id == me:
+        raise HTTPException(status_code=400, detail="You cannot message yourself")
+    try:
+        ou = await db.users.find_one({"_id": ObjectId(other_id)})
+    except Exception:
+        ou = None
+    if not ou:
+        raise HTTPException(status_code=404, detail="User not found")
+    return ou
+
+
+@api_router.get("/dm/{other_id}/messages")
+async def get_dm(other_id: str, user: dict = Depends(get_current_user)):
+    me = str(user["_id"])
+    ou = await _resolve_other(other_id, me)
+    conv = dm_conversation_id(me, other_id)
+    raw = await db.dm_messages.find({"conversation_id": conv}, {"_id": 0}).sort("created_at", 1).to_list(2000)
+    messages = [{
+        **m,
+        "user_id": m["sender_id"],
+        "user_name": m["sender_name"],
+        "user_role": m.get("sender_role", "member"),
+    } for m in raw]
+    return {"other": {"id": other_id, "name": ou.get("name", ""), "role": ou.get("role", "member")}, "messages": messages}
+
+
+@api_router.post("/dm/{other_id}/messages")
+async def post_dm(other_id: str, req: MessageCreate, user: dict = Depends(get_current_user)):
+    me = str(user["_id"])
+    ou = await _resolve_other(other_id, me)
+    attachment = None
+    if req.attachment_file_id:
+        f = await db.files.find_one({"id": req.attachment_file_id, "is_deleted": False}, {"_id": 0})
+        if f:
+            attachment = {
+                "file_id": f["id"], "filename": f["original_filename"],
+                "content_type": f["content_type"], "kind": f["kind"],
+            }
+    conv = dm_conversation_id(me, other_id)
+    msg = {
+        "id": str(uuid.uuid4()),
+        "conversation_id": conv,
+        "sender_id": me,
+        "sender_name": user.get("name", ""),
+        "sender_role": user.get("role", "member"),
+        "recipient_id": other_id,
+        "text": req.text,
+        "attachment": attachment,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.dm_messages.insert_one(dict(msg))
+    asyncio.create_task(notify_dm(ou, user, msg))
+    return {**msg, "user_id": me, "user_name": user.get("name", ""), "user_role": user.get("role", "member")}
 
 
 # ---------------------------------------------------------------------------
