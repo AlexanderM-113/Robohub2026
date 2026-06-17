@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Hash, Lock, Send, Paperclip, X, Cpu, Wrench, Briefcase, Users2, Loader2, FileDown, Plus, Search, MessageCircle } from "lucide-react";
+import { Hash, Lock, Send, Paperclip, X, Cpu, Wrench, Briefcase, Users2, Loader2, FileDown, Plus, Search, MessageCircle, Palette } from "lucide-react";
 import { api, fileUrl, formatApiErrorDetail } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
@@ -9,7 +9,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { toast } from "sonner";
 
-const subIcons = { programming: Cpu, building: Wrench, business: Briefcase, team: Users2 };
+const subIcons = { programming: Cpu, building: Wrench, business: Briefcase, team: Users2, design: Palette, general: MessageCircle };
 const subKey = (id) => id.split("-").slice(1).join("-");
 const initials = (n) => (n || "U").slice(0, 2).toUpperCase();
 

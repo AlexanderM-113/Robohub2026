@@ -72,6 +72,9 @@ CARRIER_GATEWAYS = {
     "virgin": "vmobl.com",
 }
 
+# Monthly cap on outbound notification emails (digest + email-to-SMS) to protect quota
+EMAIL_MONTHLY_LIMIT = int(os.environ.get('EMAIL_MONTHLY_LIMIT', '2500'))
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("robotics-hub")
 
@@ -81,22 +84,26 @@ api_router = APIRouter(prefix="/api")
 # ---------------------------------------------------------------------------
 # Channel definitions
 # ---------------------------------------------------------------------------
-PROGRAMS = [("vex", "VEX"), ("frc", "FRC")]
-SUBCATS = [
-    ("programming", "Programming"),
-    ("building", "Building"),
-    ("business", "Business"),
-    ("team", "Team Chat"),
-]
+# Per-program channels: VEX uses a single General chat; FRC has full categories incl. Design.
+PROGRAM_CHANNELS = {
+    "vex": {"label": "VEX", "subs": [("general", "General")]},
+    "frc": {"label": "FRC", "subs": [
+        ("programming", "Programming"),
+        ("building", "Building"),
+        ("business", "Business"),
+        ("team", "Team Chat"),
+        ("design", "Design"),
+    ]},
+}
 
 CHANNELS = []
-for pkey, plabel in PROGRAMS:
-    for ckey, clabel in SUBCATS:
+for pkey, cfg in PROGRAM_CHANNELS.items():
+    for ckey, clabel in cfg["subs"]:
         CHANNELS.append({
             "id": f"{pkey}-{ckey}",
             "name": clabel,
             "program": pkey,
-            "program_label": plabel,
+            "program_label": cfg["label"],
             "private": False,
         })
 CHANNELS.append({
@@ -294,6 +301,45 @@ async def _push_to_user(user_id: str, payload: dict):
             await db.push_subscriptions.delete_one({"endpoint": s["endpoint"]})
 
 
+async def _reserve_email_quota() -> bool:
+    """Atomically reserve one slot of the monthly outbound-email budget.
+    Returns False once EMAIL_MONTHLY_LIMIT is reached for the current month."""
+    month = datetime.now(timezone.utc).strftime("%Y-%m")
+    doc = await db.email_usage.find_one_and_update(
+        {"month": month, "count": {"$lt": EMAIL_MONTHLY_LIMIT}},
+        {"$inc": {"count": 1}},
+        return_document=True,
+    )
+    if doc:
+        return True
+    existing = await db.email_usage.find_one({"month": month})
+    if existing is None:
+        try:
+            await db.email_usage.insert_one({"month": month, "count": 1})
+            return True
+        except Exception:
+            doc = await db.email_usage.find_one_and_update(
+                {"month": month, "count": {"$lt": EMAIL_MONTHLY_LIMIT}},
+                {"$inc": {"count": 1}}, return_document=True,
+            )
+            return doc is not None
+    return False  # monthly limit reached
+
+
+async def dispatch_email(to_email: str, subject: str, html: str):
+    if await _reserve_email_quota():
+        asyncio.create_task(asyncio.to_thread(_send_email_sync, to_email, subject, html))
+    else:
+        logger.warning(f"[email quota reached - {EMAIL_MONTHLY_LIMIT}/mo] skipped to={to_email}")
+
+
+async def dispatch_sms_email(addr: str, subject: str, text: str):
+    if await _reserve_email_quota():
+        asyncio.create_task(asyncio.to_thread(_send_email_plain_sync, addr, subject, text))
+    else:
+        logger.warning(f"[sms quota reached - {EMAIL_MONTHLY_LIMIT}/mo] skipped to={addr}")
+
+
 async def notify_new_message(channel: dict, msg: dict):
     """Web push + email-to-SMS to users with access to the channel (except sender)."""
     channel_id = channel["id"]
@@ -312,12 +358,12 @@ async def notify_new_message(channel: dict, msg: dict):
             continue
         # web push (always on if subscribed)
         await _push_to_user(uid, payload)
-        # email-to-SMS
+        # email-to-SMS (counts against monthly cap)
         if u.get("sms_notifications") and u.get("phone") and u.get("carrier") in CARRIER_GATEWAYS:
             digits = _normalize_phone(u["phone"])
             if len(digits) == 10:
                 addr = f"{digits}@{CARRIER_GATEWAYS[u['carrier']]}"
-                asyncio.create_task(asyncio.to_thread(_send_email_plain_sync, addr, title, body_text))
+                await dispatch_sms_email(addr, title, body_text)
 
 
 # ---------------------------------------------------------------------------
@@ -381,7 +427,7 @@ async def build_and_send_weekly_digest():
           <h3 style="margin:18px 0 6px;">📅 Upcoming Events</h3>{events_html}
         """
         html = _email_template(f"Your Weekly Team Digest", body)
-        asyncio.create_task(asyncio.to_thread(_send_email_sync, u["email"], "Robotics Hub — Weekly Digest", html))
+        await dispatch_email(u["email"], "Robotics Hub — Weekly Digest", html)
 
 
 def _send_email_sync(to_email: str, subject: str, html: str):
@@ -638,7 +684,7 @@ async def notify_dm(recipient: dict, sender: dict, msg: dict):
         digits = _normalize_phone(recipient["phone"])
         if len(digits) == 10:
             addr = f"{digits}@{CARRIER_GATEWAYS[recipient['carrier']]}"
-            asyncio.create_task(asyncio.to_thread(_send_email_plain_sync, addr, title, body_text))
+            await dispatch_sms_email(addr, title, body_text)
 
 
 @api_router.get("/users/search")
