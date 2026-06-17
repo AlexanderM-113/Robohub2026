@@ -1,0 +1,118 @@
+{
+  "theme_and_archetype": {
+    "name": "Hybrid Archetype 3 (Pastel & Soft) + 6 (Vibrant Play)",
+    "description": "Friendly, approachable, and accessible. Designed for a youth robotics team. Focuses on clarity, generous spacing, and a non-cyberpunk, non-intimidating aesthetic. Fully supports light and dark modes with a muted, eye-friendly dark mode (no pure black).",
+    "theme_mode": "light_and_dark"
+  },
+  "typography": {
+    "heading": {
+      "family": "'Outfit', sans-serif",
+      "description": "Geometric, approachable, not overly childish. Used for all H1-H4. DO NOT USE INTER.",
+      "weights": ["400", "600", "700"]
+    },
+    "body": {
+      "family": "'Work Sans', sans-serif",
+      "description": "Excellent legibility and accessibility for chat logs and UI elements.",
+      "weights": ["400", "500"]
+    },
+    "mono": {
+      "family": "'JetBrains Mono', monospace",
+      "description": "For code snippets in the file sharing and programming chat.",
+      "weights": ["400"]
+    },
+    "sizing_rules": {
+      "h1": "text-4xl sm:text-5xl tracking-tight font-bold",
+      "h2": "text-2xl sm:text-3xl tracking-tight font-semibold",
+      "body": "text-base leading-relaxed",
+      "chat_text": "text-[15px] leading-relaxed"
+    }
+  },
+  "colors": {
+    "light_mode_hsl": {
+      "background": "210 20% 98%",
+      "foreground": "225 18% 12%",
+      "card": "0 0% 100%",
+      "card-foreground": "225 18% 12%",
+      "primary": "221 83% 53%",
+      "primary-foreground": "0 0% 100%",
+      "secondary": "38 92% 50%",
+      "secondary-foreground": "225 18% 12%",
+      "muted": "210 20% 94%",
+      "muted-foreground": "215 16% 47%",
+      "border": "214 32% 91%",
+      "input": "214 32% 91%",
+      "ring": "221 83% 53%"
+    },
+    "dark_mode_hsl": {
+      "background": "225 18% 9%",
+      "foreground": "210 20% 98%",
+      "card": "225 18% 12%",
+      "card-foreground": "210 20% 98%",
+      "primary": "221 100% 65%",
+      "primary-foreground": "0 0% 100%",
+      "secondary": "38 92% 50%",
+      "secondary-foreground": "0 0% 100%",
+      "muted": "225 18% 16%",
+      "muted-foreground": "215 20% 65%",
+      "border": "225 18% 18%",
+      "input": "225 18% 18%",
+      "ring": "221 100% 65%"
+    },
+    "usage_rules": "Strictly map these HSL values to the :root and .dark selectors in index.css. Dark mode uses dark slate (#12141A) instead of pure black for accessibility. Primary color is a friendly tech blue, secondary is an energetic yellow/orange for warnings and highlights."
+  },
+  "layout_and_spacing": {
+    "philosophy": "Generous Spacing Philosophy. The user explicitly requested 'don't crowd everything into one page, space things out.'",
+    "padding": "Cards and containers MUST have p-6 or p-8. Sections must be separated by py-12 or py-16.",
+    "gap": "Use gap-6 or gap-8 for bento/grid layouts. Avoid tight gap-2 unless inside a dense chat feed.",
+    "border_radius": "Use rounded-2xl or rounded-xl for a soft, approachable feel. Avoid sharp 0px corners.",
+    "grid_system": "Use 'Control Room' grid for the dashboard with span logic (e.g., md:grid-cols-3, main feed col-span-2, sidebar col-span-1). Use Flexbox for the chat interface (sidebar fixed width, chat area flex-grow)."
+  },
+  "components": {
+    "ui_library": "shadcn/ui via Radix primitives",
+    "icons": "lucide-react",
+    "customizations": {
+      "cards": "Subtle border (border-border), no harsh drop shadows. In light mode, shadow-sm is okay. In dark mode, rely on border and background contrast.",
+      "buttons": "rounded-full or rounded-xl. Hover state must explicitly change background brightness. Primary buttons use bg-primary text-primary-foreground.",
+      "chat_bubbles": "Incoming: bg-muted text-foreground. Outgoing: bg-primary text-primary-foreground. Generous p-4.",
+      "tabs": "Use shadcn Tabs for switching between Programming / Building / Business / Team inside a Category (VEX / FRC)."
+    }
+  },
+  "pages_structure": {
+    "login_register": "Split screen layout. Left side: Friendly hero image with overlay and inspirational robotics quote. Right side: Login/Register form with Role selection (Member/Mentor/Owner) via Select dropdown. Avoid centered tiny box.",
+    "main_dashboard": "Welcome banner (dynamic based on role). Quick summary cards (Next Event, New Files, Unread Messages). Not crowded.",
+    "chat_interface": "App-like layout. Left Sidebar: Categories (VEX, FRC) as collapsible accordions. Channels underneath (Programming, Building, Business, Team). Private Section: Members-Only channel (hidden if role != member/owner). Main panel: Chat feed with input fixed at bottom.",
+    "file_sharing": "Grid layout (bento style) for images. List layout for Code/Zip files. Upload button opens a Dialog.",
+    "calendar": "Full-width calendar view using standard grid. Mentors/Owners see 'Add Event' button.",
+    "admin_profile": "Settings layout with vertical tabs (Profile, Notifications, Team Members - for owner). Toggles for Email & Text notifications."
+  },
+  "media": {
+    "image_urls": [
+      {
+        "url": "https://images.unsplash.com/photo-1658584124309-768111d9c5db?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NzB8MHwxfHNlYXJjaHwyfHx0ZWVuYWdlcnMlMjBidWlsZGluZyUyMHJvYm90fGVufDB8fHx8MTc4MTY5NzYxMnww&ixlib=rb-4.1.0&q=85",
+        "description": "Teenagers working collaboratively around a table on a robotics project.",
+        "category": "login_hero"
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1596496356933-9b6e0b186b88?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzZ8MHwxfHNlYXJjaHwzfHxyb2JvdGljcyUyMHRlYW0lMjBzdHVkZW50c3xlbnwwfHx8fDE3ODE2OTc2MTJ8MA&ixlib=rb-4.1.0&q=85",
+        "description": "Students standing in a workshop/lab setting.",
+        "category": "dashboard_banner"
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1742767069929-0c663150b164?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzZ8MHwxfHNlYXJjaHwxfHxyb2JvdGljcyUyMHRlYW0lMjBzdHVkZW50c3xlbnwwfHx8fDE3ODE2OTc2MTJ8MA&ixlib=rb-4.1.0&q=85",
+        "description": "Close up of a prototype robot mechanism.",
+        "category": "file_gallery_placeholder"
+      }
+    ],
+    "usage": "Use these exact URLs. DO NOT use generic placeholders like via.placeholder.com. Use the login_hero image for the left side of the authentication screen."
+  },
+  "instructions_to_main_agent": [
+    "CRITICAL: All interactive and key informational elements MUST include a data-testid attribute to facilitate robust automated testing. Example: data-testid='login-button', data-testid='chat-input'.",
+    "CRITICAL: Use pure HTML+Tailwind for main layout structures (sidebar, main content flexbox). Use Shadcn components for complex interactions (Dialog, Tabs, Select, Calendar, Dropdown).",
+    "Implement light and dark mode toggling using a standard theme provider toggling the 'dark' class on the HTML element.",
+    "DO NOT cram the chat, files, and calendar onto one page. Use react-router-dom to separate views, connected by the main sidebar navigation.",
+    "Role Based Access Control: The 'Members Only' chat link/route MUST NOT render if the current user's role is 'mentor'. The Owner role must be restricted to 1 user (handled in backend logic or mock state).",
+    "Avoid the generic 'Vercel' look. Use the specified 'Outfit' font for headings to give it a distinct team personality.",
+    "To handle 'Keep it spaced out', wrap main content areas in a container with max-w-7xl mx-auto and p-8.",
+    "Add hover and focus states (focus-visible:ring-2) to all interactive elements to pass accessibility standards."
+  ]
+}
