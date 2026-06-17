@@ -443,6 +443,13 @@ class RoleUpdate(BaseModel):
     role: str
 
 
+class CreateUserRequest(BaseModel):
+    name: str
+    email: EmailStr
+    password: str
+    role: str = "member"
+
+
 # ---------------------------------------------------------------------------
 # Auth endpoints
 # ---------------------------------------------------------------------------
@@ -770,6 +777,50 @@ async def update_user_role(user_id: str, req: RoleUpdate, user: dict = Depends(r
     await db.users.update_one({"_id": ObjectId(user_id)}, {"$set": {"role": req.role}})
     updated = await db.users.find_one({"_id": ObjectId(user_id)})
     return serialize_user(updated)
+
+
+@api_router.post("/users")
+async def create_user(req: CreateUserRequest, user: dict = Depends(require_roles("owner"))):
+    email = req.email.lower()
+    if email == OWNER_EMAIL:
+        raise HTTPException(status_code=400, detail="This email is reserved for the owner")
+    if req.role not in ("member", "mentor"):
+        raise HTTPException(status_code=400, detail="Role must be member or mentor (owner is reserved)")
+    if len(req.password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    existing = await db.users.find_one({"email": email})
+    if existing:
+        raise HTTPException(status_code=400, detail="A user with this email already exists")
+    doc = {
+        "email": email,
+        "password_hash": hash_password(req.password),
+        "name": req.name.strip() or email.split("@")[0],
+        "role": req.role,
+        "phone": "",
+        "carrier": "",
+        "email_notifications": True,
+        "sms_notifications": False,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    result = await db.users.insert_one(doc)
+    doc["_id"] = result.inserted_id
+    return serialize_user(doc)
+
+
+@api_router.delete("/users/{user_id}")
+async def delete_user(user_id: str, user: dict = Depends(require_roles("owner"))):
+    try:
+        oid = ObjectId(user_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid user id")
+    target = await db.users.find_one({"_id": oid})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target.get("role") == "owner":
+        raise HTTPException(status_code=400, detail="The owner account cannot be deleted")
+    await db.users.delete_one({"_id": oid})
+    await db.push_subscriptions.delete_many({"user_id": user_id})
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
