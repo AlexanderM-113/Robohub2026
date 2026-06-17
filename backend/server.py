@@ -15,7 +15,6 @@ import jwt
 import bcrypt
 import requests
 import resend
-from twilio.rest import Client as TwilioClient
 
 from fastapi import (
     FastAPI, APIRouter, Depends, HTTPException, Request, Response,
@@ -46,9 +45,9 @@ APP_NAME = "robotics-hub"
 
 RESEND_API_KEY = os.environ.get('RESEND_API_KEY', '')
 SENDER_EMAIL = os.environ.get('SENDER_EMAIL', 'onboarding@resend.dev')
-TWILIO_ACCOUNT_SID = os.environ.get('TWILIO_ACCOUNT_SID', '')
-TWILIO_AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN', '')
-TWILIO_PHONE_NUMBER = os.environ.get('TWILIO_PHONE_NUMBER', '')
+TEXTBEE_API_KEY = os.environ.get('TEXTBEE_API_KEY', '')
+TEXTBEE_DEVICE_ID = os.environ.get('TEXTBEE_DEVICE_ID', '')
+TEXTBEE_URL = "https://api.textbee.dev/api/v1"
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("robotics-hub")
@@ -210,12 +209,17 @@ def _send_email_sync(to_email: str, subject: str, html: str):
 
 
 def _send_sms_sync(to_phone: str, body: str):
-    if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_PHONE_NUMBER):
+    if not (TEXTBEE_API_KEY and TEXTBEE_DEVICE_ID):
         logger.info(f"[sms skipped - no key] to={to_phone}")
         return
     try:
-        tclient = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-        tclient.messages.create(from_=TWILIO_PHONE_NUMBER, to=to_phone, body=body)
+        resp = requests.post(
+            f"{TEXTBEE_URL}/gateway/devices/{TEXTBEE_DEVICE_ID}/send-sms",
+            headers={"x-api-key": TEXTBEE_API_KEY},
+            json={"recipients": [to_phone], "message": body},
+            timeout=30,
+        )
+        resp.raise_for_status()
         logger.info(f"[sms sent] to={to_phone}")
     except Exception as e:
         logger.error(f"[sms failed] to={to_phone} err={e}")
