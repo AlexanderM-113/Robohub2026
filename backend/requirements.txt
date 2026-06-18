@@ -124,5 +124,5 @@ urllib3==2.7.0
 uvicorn==0.29.0
 watchfiles==0.21.0
 websockets==12.0
-yarl==1.9.4
+yarl>=1.9,<2.0
 zipp==3.19.2
