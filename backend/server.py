@@ -49,6 +49,14 @@ EMERGENT_KEY = os.environ.get('EMERGENT_LLM_KEY')
 STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
 APP_NAME = "robotics-hub"
 
+# Storage provider: "emergent" (default, used inside Emergent) or "r2" (Cloudflare R2 / any S3-compatible) for self-hosting
+STORAGE_PROVIDER = os.environ.get('STORAGE_PROVIDER', 'emergent').lower()
+R2_ACCOUNT_ID = os.environ.get('R2_ACCOUNT_ID', '')
+R2_ACCESS_KEY_ID = os.environ.get('R2_ACCESS_KEY_ID', '')
+R2_SECRET_ACCESS_KEY = os.environ.get('R2_SECRET_ACCESS_KEY', '')
+R2_BUCKET = os.environ.get('R2_BUCKET', '')
+R2_ENDPOINT = os.environ.get('R2_ENDPOINT', '') or (f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com" if R2_ACCOUNT_ID else '')
+
 RESEND_API_KEY = os.environ.get('RESEND_API_KEY', '')
 SENDER_EMAIL = os.environ.get('SENDER_EMAIL', 'onboarding@resend.dev')
 
@@ -194,9 +202,30 @@ def require_roles(*roles):
 # Object storage helpers
 # ---------------------------------------------------------------------------
 storage_key = None
+_r2_client = None
+
+
+def _get_r2_client():
+    global _r2_client
+    if _r2_client is None:
+        import boto3
+        from botocore.config import Config
+        _r2_client = boto3.client(
+            "s3",
+            endpoint_url=R2_ENDPOINT,
+            aws_access_key_id=R2_ACCESS_KEY_ID,
+            aws_secret_access_key=R2_SECRET_ACCESS_KEY,
+            region_name="auto",
+            config=Config(signature_version="s3v4"),
+        )
+    return _r2_client
 
 
 def init_storage():
+    """Emergent storage needs a session key; R2 needs nothing."""
+    if STORAGE_PROVIDER == "r2":
+        _get_r2_client()
+        return "r2"
     global storage_key
     if storage_key:
         return storage_key
@@ -207,6 +236,9 @@ def init_storage():
 
 
 def put_object(path: str, data: bytes, content_type: str) -> dict:
+    if STORAGE_PROVIDER == "r2":
+        _get_r2_client().put_object(Bucket=R2_BUCKET, Key=path, Body=data, ContentType=content_type)
+        return {"path": path, "size": len(data)}
     key = init_storage()
     resp = requests.put(
         f"{STORAGE_URL}/objects/{path}",
@@ -218,6 +250,9 @@ def put_object(path: str, data: bytes, content_type: str) -> dict:
 
 
 def get_object(path: str):
+    if STORAGE_PROVIDER == "r2":
+        obj = _get_r2_client().get_object(Bucket=R2_BUCKET, Key=path)
+        return obj["Body"].read(), obj.get("ContentType", "application/octet-stream")
     key = init_storage()
     resp = requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
     resp.raise_for_status()
