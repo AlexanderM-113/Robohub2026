@@ -1,0 +1,55 @@
+# Render Blueprint for the Robotics Hub FastAPI backend.
+# In Render: New + > Blueprint > connect your GitHub repo > it reads this file.
+services:
+  - type: web
+    name: robotics-hub-api
+    runtime: python
+    rootDir: backend
+    plan: starter            # "starter" stays always-on so the weekly digest cron runs. "free" sleeps when idle.
+    healthCheckPath: /api/
+    # Strip the Emergent-only package (unused by the app) before installing.
+    buildCommand: "grep -v '^emergentintegrations' requirements.txt > render-reqs.txt && pip install -r render-reqs.txt"
+    startCommand: "uvicorn server:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      # ---- set these in the Render dashboard (Environment tab) ----
+      - key: MONGO_URL          # from MongoDB Atlas
+        sync: false
+      - key: DB_NAME
+        value: robotics_hub
+      - key: JWT_SECRET
+        sync: false
+      - key: OWNER_EMAIL
+        value: alexander_m113@outlook.com
+      - key: OWNER_PASSWORD
+        sync: false
+      - key: OWNER_NAME
+        value: Alexander
+      - key: CORS_ORIGINS       # your Vercel/Netlify frontend URL, e.g. https://robotics-hub.vercel.app
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: SENDER_EMAIL
+        value: notify@sabercats4146.com
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY_B64
+        sync: false
+      - key: VAPID_CLAIM_EMAIL
+        value: mailto:alexander_m113@outlook.com
+      - key: EMAIL_MONTHLY_LIMIT
+        value: "2500"
+      # ---- Cloudflare R2 object storage ----
+      - key: STORAGE_PROVIDER
+        value: r2
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET
+        value: robotics-hub
+      - key: R2_ENDPOINT        # optional; auto-built from R2_ACCOUNT_ID if left blank
+        sync: false
