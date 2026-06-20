@@ -1,0 +1,21 @@
+# Production dependencies for Render (clean — no Emergent-internal packages).
+# These are exactly the libraries the app imports, pinned to the versions
+# verified working in development. Transitive deps resolve automatically.
+fastapi==0.110.1
+uvicorn==0.25.0
+starlette==0.37.2
+motor==3.3.1
+pymongo==4.5.0
+pydantic==2.13.4
+python-dotenv==1.2.2
+PyJWT==2.13.0
+bcrypt==4.1.3
+requests==2.34.2
+resend==2.30.1
+pywebpush==2.3.0
+APScheduler==3.11.2
+boto3==1.43.27
+python-multipart==0.0.32
+email-validator==2.3.0
+cryptography==48.0.1
+tzdata==2026.2
