@@ -2,9 +2,10 @@ import { useState } from "react";
 import { NavLink, useNavigate, Outlet } from "react-router-dom";
 import {
   LayoutDashboard, MessagesSquare, FolderOpen, CalendarDays,
-  Settings, Users, LogOut, Bot, Menu, X,
+  Settings, Users, LogOut, Menu, X,
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
+import logo from "@/assets/logo.webp";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -43,8 +44,8 @@ export function AppLayout() {
   const SidebarContent = () => (
     <div className="flex flex-col h-full">
       <div className="flex items-center gap-2.5 px-6 h-20 border-b border-border">
-        <div className="h-10 w-10 rounded-xl bg-primary flex items-center justify-center">
-          <Bot className="h-6 w-6 text-primary-foreground" />
+        <div className="h-10 w-10 rounded-xl bg-black flex items-center justify-center overflow-hidden">
+          <img src={logo} alt="Robotics Hub" className="h-full w-full object-cover" />
         </div>
         <div>
           <p className="font-heading font-bold text-base leading-tight">Robotics Hub</p>

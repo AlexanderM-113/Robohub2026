@@ -35,9 +35,20 @@ from bson import ObjectId
 # ---------------------------------------------------------------------------
 # Config / DB
 # ---------------------------------------------------------------------------
+def _require_env(*names: str) -> None:
+    missing = [n for n in names if not os.environ.get(n)]
+    if missing:
+        raise RuntimeError(
+            "Missing required environment variable(s): "
+            + ", ".join(missing)
+            + ". Set them in your Render service (Environment tab) or render.yaml before deploying."
+        )
+
+_require_env('MONGO_URL', 'JWT_SECRET', 'OWNER_EMAIL', 'OWNER_PASSWORD')
+
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+db = client[os.environ.get('DB_NAME', 'robotics_hub')]
 
 JWT_SECRET = os.environ['JWT_SECRET']
 JWT_ALGORITHM = "HS256"
@@ -164,6 +175,7 @@ def serialize_user(user: dict) -> dict:
         "carrier": user.get("carrier", ""),
         "email_notifications": user.get("email_notifications", True),
         "sms_notifications": user.get("sms_notifications", False),
+        "status": user.get("status", "approved"),
         "created_at": user.get("created_at"),
     }
 
@@ -183,6 +195,8 @@ async def get_current_user(request: Request) -> dict:
         user = await db.users.find_one({"_id": ObjectId(payload["sub"])})
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
+        if user.get("status") == "pending":
+            raise HTTPException(status_code=403, detail="Your account is awaiting owner approval")
         return user
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
@@ -375,6 +389,21 @@ async def dispatch_sms_email(addr: str, subject: str, text: str):
         logger.warning(f"[sms quota reached - {EMAIL_MONTHLY_LIMIT}/mo] skipped to={addr}")
 
 
+async def notify_owner_pending_signup(new_user: dict):
+    """Email the owner that someone requested to join and is awaiting approval."""
+    try:
+        name = new_user.get("name", "")
+        email = new_user.get("email", "")
+        subject = f"New member request: {name or email}"
+        html = (
+            f"<p><strong>{name or email}</strong> ({email}) has requested to join your robotics team.</p>"
+            "<p>Sign in and open the Team page to approve or decline this request.</p>"
+        )
+        await dispatch_email(OWNER_EMAIL, subject, html)
+    except Exception as e:
+        logger.error(f"pending signup notify failed: {e}")
+
+
 async def notify_new_message(channel: dict, msg: dict):
     """Web push + email-to-SMS to users with access to the channel (except sender)."""
     channel_id = channel["id"]
@@ -532,6 +561,10 @@ class CreateUserRequest(BaseModel):
     role: str = "member"
 
 
+class ApproveRequest(BaseModel):
+    role: str = "member"
+
+
 # ---------------------------------------------------------------------------
 # Auth endpoints
 # ---------------------------------------------------------------------------
@@ -540,8 +573,6 @@ async def register(req: RegisterRequest, response: Response):
     email = req.email.lower()
     if email == OWNER_EMAIL:
         raise HTTPException(status_code=400, detail="This email is reserved. Please sign in instead.")
-    if req.role not in ("member", "mentor"):
-        raise HTTPException(status_code=400, detail="Role must be member or mentor")
     existing = await db.users.find_one({"email": email})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -549,7 +580,8 @@ async def register(req: RegisterRequest, response: Response):
         "email": email,
         "password_hash": hash_password(req.password),
         "name": req.name.strip() or email.split("@")[0],
-        "role": req.role,
+        "role": "member",
+        "status": "pending",
         "phone": "",
         "email_notifications": True,
         "sms_notifications": False,
@@ -557,9 +589,12 @@ async def register(req: RegisterRequest, response: Response):
     }
     result = await db.users.insert_one(doc)
     doc["_id"] = result.inserted_id
-    token = create_access_token(str(result.inserted_id), email)
-    response.set_cookie("access_token", token, httponly=True, samesite="lax", max_age=604800, path="/")
-    return {"token": token, "user": serialize_user(doc)}
+    asyncio.create_task(notify_owner_pending_signup(doc))
+    return {
+        "pending": True,
+        "message": "Your request to join has been sent. You'll be able to sign in once the team owner approves your account.",
+        "user": serialize_user(doc),
+    }
 
 
 @api_router.post("/auth/login")
@@ -568,6 +603,8 @@ async def login(req: LoginRequest, response: Response):
     user = await db.users.find_one({"email": email})
     if not user or not verify_password(req.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")
+    if user.get("status") == "pending":
+        raise HTTPException(status_code=403, detail="Your account is awaiting owner approval. You'll be able to sign in once approved.")
     token = create_access_token(str(user["_id"]), email)
     response.set_cookie("access_token", token, httponly=True, samesite="lax", max_age=604800, path="/")
     return {"token": token, "user": serialize_user(user)}
@@ -968,8 +1005,52 @@ async def delete_event(event_id: str, user: dict = Depends(require_roles("owner"
 # ---------------------------------------------------------------------------
 @api_router.get("/users")
 async def list_users(user: dict = Depends(require_roles("owner"))):
-    users = await db.users.find({}).sort("created_at", 1).to_list(1000)
+    users = await db.users.find({"status": {"$ne": "pending"}}).sort("created_at", 1).to_list(1000)
     return [serialize_user(u) for u in users]
+
+
+@api_router.get("/users/pending")
+async def list_pending_users(user: dict = Depends(require_roles("owner"))):
+    users = await db.users.find({"status": "pending"}).sort("created_at", 1).to_list(1000)
+    return [serialize_user(u) for u in users]
+
+
+@api_router.post("/users/{user_id}/approve")
+async def approve_user(user_id: str, req: ApproveRequest, user: dict = Depends(require_roles("owner"))):
+    if req.role not in ("member", "mentor"):
+        raise HTTPException(status_code=400, detail="Role must be member or mentor")
+    try:
+        oid = ObjectId(user_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid user id")
+    target = await db.users.find_one({"_id": oid})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target.get("status") != "pending":
+        raise HTTPException(status_code=400, detail="This member has already been reviewed")
+    await db.users.update_one({"_id": oid}, {"$set": {"status": "approved", "role": req.role}})
+    updated = await db.users.find_one({"_id": oid})
+    asyncio.create_task(dispatch_email(
+        updated["email"],
+        "You're in! Your robotics team account is approved",
+        "<p>Your account has been approved. You can now sign in to the Robotics Hub.</p>",
+    ))
+    return serialize_user(updated)
+
+
+@api_router.post("/users/{user_id}/reject")
+async def reject_user(user_id: str, user: dict = Depends(require_roles("owner"))):
+    try:
+        oid = ObjectId(user_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid user id")
+    target = await db.users.find_one({"_id": oid})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target.get("status") != "pending":
+        raise HTTPException(status_code=400, detail="This member has already been reviewed")
+    await db.users.delete_one({"_id": oid})
+    return {"ok": True}
 
 
 @api_router.put("/users/{user_id}/role")

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Users, Crown, Loader2, UserPlus, Trash2 } from "lucide-react";
+import { Users, Crown, Loader2, UserPlus, Trash2, UserCheck, Check, X } from "lucide-react";
 import { api, formatApiErrorDetail } from "@/lib/api";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -21,13 +21,45 @@ const emptyForm = { name: "", email: "", password: "", role: "member" };
 
 export default function TeamPage() {
   const [users, setUsers] = useState(null);
+  const [pending, setPending] = useState([]);
+  const [pendingRoles, setPendingRoles] = useState({});
+  const [busyId, setBusyId] = useState(null);
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
   const [toDelete, setToDelete] = useState(null);
 
   const load = () => api.get("/users").then(({ data }) => setUsers(data)).catch(() => setUsers([]));
-  useEffect(() => { load(); }, []);
+  const loadPending = () => api.get("/users/pending").then(({ data }) => setPending(data)).catch(() => setPending([]));
+  useEffect(() => { load(); loadPending(); }, []);
+
+  const approve = async (u) => {
+    setBusyId(u.id);
+    try {
+      const role = pendingRoles[u.id] || "member";
+      const { data } = await api.post(`/users/${u.id}/approve`, { role });
+      toast.success(`${u.name} approved`);
+      setPending((p) => p.filter((x) => x.id !== u.id));
+      setUsers((cur) => [...(cur || []), data]);
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Could not approve member");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const reject = async (u) => {
+    setBusyId(u.id);
+    try {
+      await api.post(`/users/${u.id}/reject`);
+      toast.success(`${u.name}'s request declined`);
+      setPending((p) => p.filter((x) => x.id !== u.id));
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Could not decline request");
+    } finally {
+      setBusyId(null);
+    }
+  };
 
   const changeRole = async (id, role) => {
     try {
@@ -126,6 +158,49 @@ export default function TeamPage() {
           </DialogContent>
         </Dialog>
       </div>
+
+      {pending.length > 0 && (
+        <div className="space-y-3" data-testid="pending-approvals">
+          <div className="flex items-center gap-2">
+            <UserCheck className="h-5 w-5 text-secondary" />
+            <h2 className="font-heading text-xl font-bold">Pending Approvals</h2>
+            <Badge className="rounded-lg bg-secondary text-secondary-foreground">{pending.length}</Badge>
+          </div>
+          <p className="text-sm text-muted-foreground">New people who requested to join. Approve to grant access.</p>
+          {pending.map((u) => (
+            <Card key={u.id} className="p-4 rounded-2xl flex flex-col sm:flex-row sm:items-center gap-4 border-secondary/40" data-testid={`pending-user-${u.id}`}>
+              <Avatar className="h-11 w-11">
+                <AvatarFallback className="bg-secondary text-secondary-foreground font-semibold">
+                  {(u.name || "U").slice(0, 2).toUpperCase()}
+                </AvatarFallback>
+              </Avatar>
+              <div className="flex-1 min-w-0">
+                <p className="font-medium truncate">{u.name}</p>
+                <p className="text-sm text-muted-foreground truncate">{u.email}</p>
+              </div>
+              <Select value={pendingRoles[u.id] || "member"} onValueChange={(v) => setPendingRoles((r) => ({ ...r, [u.id]: v }))}>
+                <SelectTrigger className="w-32 rounded-xl" data-testid={`pending-role-${u.id}`}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="member">Member</SelectItem>
+                  <SelectItem value="mentor">Mentor</SelectItem>
+                </SelectContent>
+              </Select>
+              <div className="flex items-center gap-2">
+                <Button onClick={() => approve(u)} disabled={busyId === u.id} size="sm"
+                  className="rounded-xl gap-1.5" data-testid={`approve-user-${u.id}`}>
+                  {busyId === u.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />} Approve
+                </Button>
+                <Button onClick={() => reject(u)} disabled={busyId === u.id} size="sm" variant="outline"
+                  className="rounded-xl gap-1.5 text-destructive hover:text-destructive" data-testid={`reject-user-${u.id}`}>
+                  <X className="h-4 w-4" /> Decline
+                </Button>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
 
       {users === null ? (
         <div className="flex justify-center py-20"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>
