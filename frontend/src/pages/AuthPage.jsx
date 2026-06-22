@@ -1,14 +1,14 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Bot, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { api, formatApiErrorDetail } from "@/lib/api";
+import logo from "@/assets/logo.webp";
 import { useAuth } from "@/context/AuthContext";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
 
 const HERO =
@@ -20,7 +20,7 @@ export default function AuthPage() {
   const [loading, setLoading] = useState(false);
 
   const [loginData, setLoginData] = useState({ email: "", password: "" });
-  const [regData, setRegData] = useState({ name: "", email: "", password: "", role: "member" });
+  const [regData, setRegData] = useState({ name: "", email: "", password: "" });
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -42,9 +42,8 @@ export default function AuthPage() {
     setLoading(true);
     try {
       const { data } = await api.post("/auth/register", regData);
-      signIn(data.token, data.user);
-      toast.success("Account created. Welcome to the team!");
-      navigate("/");
+      toast.success(data?.message || "Request sent — awaiting owner approval.");
+      setRegData({ name: "", email: "", password: "" });
     } catch (err) {
       toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Registration failed");
     } finally {
@@ -60,8 +59,8 @@ export default function AuthPage() {
         <div className="absolute inset-0 bg-gradient-to-t from-blue-950/90 via-blue-900/50 to-blue-700/30" />
         <div className="relative h-full flex flex-col justify-between p-12 text-white">
           <div className="flex items-center gap-3">
-            <div className="h-11 w-11 rounded-xl bg-white/15 backdrop-blur flex items-center justify-center">
-              <Bot className="h-6 w-6" />
+            <div className="h-11 w-11 rounded-xl bg-black/40 backdrop-blur flex items-center justify-center overflow-hidden">
+              <img src={logo} alt="Robotics Hub" className="h-full w-full object-cover" />
             </div>
             <span className="font-heading font-bold text-xl">Robotics Hub</span>
           </div>
@@ -81,8 +80,8 @@ export default function AuthPage() {
         <div className="absolute top-6 right-6"><ThemeToggle /></div>
         <div className="w-full max-w-md mx-auto">
           <div className="lg:hidden flex items-center gap-2.5 mb-8">
-            <div className="h-10 w-10 rounded-xl bg-primary flex items-center justify-center">
-              <Bot className="h-6 w-6 text-primary-foreground" />
+            <div className="h-10 w-10 rounded-xl bg-black flex items-center justify-center overflow-hidden">
+              <img src={logo} alt="Robotics Hub" className="h-full w-full object-cover" />
             </div>
             <span className="font-heading font-bold text-lg">Robotics Hub</span>
           </div>
@@ -118,7 +117,7 @@ export default function AuthPage() {
 
             <TabsContent value="register">
               <h2 className="font-heading text-2xl font-bold mb-1">Join your team</h2>
-              <p className="text-muted-foreground mb-6">Create an account to get started.</p>
+              <p className="text-muted-foreground mb-6">Request an account — the team owner will approve it before you can sign in.</p>
               <form onSubmit={handleRegister} className="space-y-5">
                 <div className="space-y-2">
                   <Label htmlFor="reg-name">Full name</Label>
@@ -138,21 +137,9 @@ export default function AuthPage() {
                     value={regData.password} onChange={(e) => setRegData({ ...regData, password: e.target.value })}
                     placeholder="At least 6 characters" className="rounded-xl h-11" />
                 </div>
-                <div className="space-y-2">
-                  <Label>I am a...</Label>
-                  <Select value={regData.role} onValueChange={(v) => setRegData({ ...regData, role: v })}>
-                    <SelectTrigger data-testid="register-role-select" className="rounded-xl h-11">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="member" data-testid="role-option-member">Member (Student)</SelectItem>
-                      <SelectItem value="mentor" data-testid="role-option-mentor">Mentor / Coach</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
                 <Button type="submit" disabled={loading} data-testid="register-submit-button"
                   className="w-full h-11 rounded-xl font-semibold">
-                  {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Create Account"}
+                  {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Request to Join"}
                 </Button>
               </form>
             </TabsContent>
