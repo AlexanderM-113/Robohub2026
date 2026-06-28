@@ -21,6 +21,8 @@ import resend
 from pywebpush import webpush, WebPushException
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
+import httpx
 
 from fastapi import (
     FastAPI, APIRouter, Depends, HTTPException, Request, Response,
@@ -1189,6 +1191,20 @@ async def startup():
             CronTrigger(day_of_week="wed", hour=10, minute=0, timezone="America/Phoenix"),
             id="weekly_digest", replace_existing=True,
         )
+        render_url = os.environ.get("RENDER_EXTERNAL_URL")
+        if render_url:
+            async def _keep_alive():
+                try:
+                    async with httpx.AsyncClient(timeout=10) as c:
+                        await c.get(f"{render_url}/api/")
+                except Exception:
+                    pass
+            scheduler.add_job(
+                _keep_alive,
+                IntervalTrigger(minutes=14),
+                id="keep_alive", replace_existing=True,
+            )
+            logger.info("Keep-alive ping scheduled every 14 min")
         scheduler.start()
         app.state.scheduler = scheduler
         logger.info("Weekly digest scheduler started (Wed 10:00 America/Phoenix)")

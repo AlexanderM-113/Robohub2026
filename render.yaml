@@ -5,7 +5,7 @@ services:
     name: robotics-hub-api
     runtime: python
     rootDir: backend
-    plan: starter            # "starter" stays always-on so the weekly digest cron runs. "free" sleeps when idle.
+    plan: free               # Self-ping keep-alive prevents idle spin-down on the free plan.
     healthCheckPath: /api/
     # Use the curated production requirements (no Emergent-internal packages).
     buildCommand: "pip install -r requirements-render.txt"
