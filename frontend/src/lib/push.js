@@ -25,7 +25,8 @@ export async function enablePush() {
   const permission = await Notification.requestPermission();
   if (permission !== "granted") throw new Error("Notification permission was denied.");
 
-  const reg = await navigator.serviceWorker.register("/sw.js");
+  const reg = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+  if (reg.waiting) reg.waiting.postMessage({ type: "SKIP_WAITING" });
   await navigator.serviceWorker.ready;
 
   const { data } = await api.get("/push/public-key");

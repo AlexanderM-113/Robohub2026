@@ -19,6 +19,7 @@ import bcrypt
 import requests
 import resend
 from pywebpush import webpush, WebPushException
+from cryptography.fernet import Fernet, InvalidToken
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -93,6 +94,26 @@ CARRIER_GATEWAYS = {
 
 # Monthly cap on outbound notification emails (digest + email-to-SMS) to protect quota
 EMAIL_MONTHLY_LIMIT = int(os.environ.get('EMAIL_MONTHLY_LIMIT', '2500'))
+
+# Field-level encryption at rest
+_DATA_KEY = os.environ.get('DATA_ENCRYPTION_KEY')
+_fernet = Fernet(_DATA_KEY.encode()) if _DATA_KEY else None
+
+
+def encrypt_field(plaintext: str) -> str:
+    if not _fernet or not plaintext:
+        return plaintext
+    return _fernet.encrypt(plaintext.encode('utf-8')).decode('utf-8')
+
+
+def decrypt_field(ciphertext: str) -> str:
+    if not _fernet or not ciphertext:
+        return ciphertext
+    try:
+        return _fernet.decrypt(ciphertext.encode('utf-8')).decode('utf-8')
+    except (InvalidToken, Exception):
+        return ciphertext
+
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("robotics-hub")
@@ -171,7 +192,7 @@ def serialize_user(user: dict) -> dict:
         "email": user["email"],
         "name": user.get("name", ""),
         "role": user.get("role", "member"),
-        "phone": user.get("phone", ""),
+        "phone": decrypt_field(user.get("phone", "")),
         "carrier": user.get("carrier", ""),
         "email_notifications": user.get("email_notifications", True),
         "sms_notifications": user.get("sms_notifications", False),
@@ -424,7 +445,7 @@ async def notify_new_message(channel: dict, msg: dict):
         await _push_to_user(uid, payload)
         # email-to-SMS (counts against monthly cap)
         if u.get("sms_notifications") and u.get("phone") and u.get("carrier") in CARRIER_GATEWAYS:
-            digits = _normalize_phone(u["phone"])
+            digits = _normalize_phone(decrypt_field(u["phone"]))
             if len(digits) == 10:
                 addr = f"{digits}@{CARRIER_GATEWAYS[u['carrier']]}"
                 await dispatch_sms_email(addr, title, body_text)
@@ -627,7 +648,7 @@ async def update_settings(req: SettingsUpdate, user: dict = Depends(get_current_
     if req.name is not None:
         updates["name"] = req.name.strip()
     if req.phone is not None:
-        updates["phone"] = req.phone.strip()
+        updates["phone"] = encrypt_field(req.phone.strip())
     if req.carrier is not None:
         updates["carrier"] = req.carrier.strip()
     if req.email_notifications is not None:
@@ -657,6 +678,9 @@ async def get_messages(channel_id: str, user: dict = Depends(get_current_user)):
     if not channel_visible_to(channel_id, user.get("role")):
         raise HTTPException(status_code=403, detail="You don't have access to this channel")
     msgs = await db.messages.find({"channel_id": channel_id}, {"_id": 0}).sort("created_at", 1).to_list(1000)
+    for m in msgs:
+        if m.get("text"):
+            m["text"] = decrypt_field(m["text"])
     return msgs
 
 
@@ -686,7 +710,9 @@ async def post_message(channel_id: str, req: MessageCreate, user: dict = Depends
         "attachment": attachment,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    await db.messages.insert_one(dict(msg))
+    store = dict(msg)
+    store["text"] = encrypt_field(store["text"])
+    await db.messages.insert_one(store)
     channel = next((c for c in CHANNELS if c["id"] == channel_id), None)
     if channel:
         asyncio.create_task(notify_new_message(channel, msg))
@@ -712,6 +738,15 @@ async def push_subscribe(sub: PushSubscription, user: dict = Depends(get_current
     await db.push_subscriptions.update_one(
         {"endpoint": sub.endpoint}, {"$set": doc}, upsert=True
     )
+    # Send a test notification so the user knows it works
+    test_payload = {
+        "title": "Robotics Hub",
+        "body": "Push notifications are working! You'll get alerts for new messages.",
+        "url": "/settings",
+        "tag": "robotics-hub-test",
+    }
+    sub_info = {"endpoint": sub.endpoint, "keys": sub.keys}
+    asyncio.create_task(asyncio.to_thread(_send_webpush_sync, sub_info, test_payload))
     return {"ok": True}
 
 
@@ -753,7 +788,7 @@ async def notify_dm(recipient: dict, sender: dict, msg: dict):
     payload = {"title": title, "body": body_text, "url": "/chat"}
     await _push_to_user(rid, payload)
     if recipient.get("sms_notifications") and recipient.get("phone") and recipient.get("carrier") in CARRIER_GATEWAYS:
-        digits = _normalize_phone(recipient["phone"])
+        digits = _normalize_phone(decrypt_field(recipient["phone"]))
         if len(digits) == 10:
             addr = f"{digits}@{CARRIER_GATEWAYS[recipient['carrier']]}"
             await dispatch_sms_email(addr, title, body_text)
@@ -799,7 +834,7 @@ async def dm_threads(user: dict = Depends(get_current_user)):
             "user_id": other_id,
             "name": ou.get("name", ""),
             "role": ou.get("role", "member"),
-            "last_text": last.get("text") or "Attachment",
+            "last_text": decrypt_field(last.get("text") or "") or "Attachment",
             "last_at": last["created_at"],
         })
     result.sort(key=lambda x: x["last_at"], reverse=True)
@@ -826,6 +861,7 @@ async def get_dm(other_id: str, user: dict = Depends(get_current_user)):
     raw = await db.dm_messages.find({"conversation_id": conv}, {"_id": 0}).sort("created_at", 1).to_list(2000)
     messages = [{
         **m,
+        "text": decrypt_field(m.get("text", "")),
         "user_id": m["sender_id"],
         "user_name": m["sender_name"],
         "user_role": m.get("sender_role", "member"),
@@ -857,7 +893,9 @@ async def post_dm(other_id: str, req: MessageCreate, user: dict = Depends(get_cu
         "attachment": attachment,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    await db.dm_messages.insert_one(dict(msg))
+    store = dict(msg)
+    store["text"] = encrypt_field(store["text"])
+    await db.dm_messages.insert_one(store)
     asyncio.create_task(notify_dm(ou, user, msg))
     return {**msg, "user_id": me, "user_name": user.get("name", ""), "user_role": user.get("role", "member")}
 
