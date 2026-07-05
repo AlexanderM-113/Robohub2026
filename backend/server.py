@@ -2,7 +2,10 @@ from dotenv import load_dotenv
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+# Only load .env if it exists AND no VAPID keys are set in environment
+# This ensures Render env vars take precedence
+if not (os.environ.get('VAPID_PRIVATE_KEY_B64') or os.environ.get('VAPID_PRIVATE_KEY')):
+    load_dotenv(ROOT_DIR / '.env')
 
 import os
 import re
