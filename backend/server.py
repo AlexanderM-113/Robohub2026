@@ -327,7 +327,11 @@ def _normalize_phone(phone: str) -> str:
 
 
 def _send_webpush_sync(subscription_info: dict, payload: dict):
-    if not (VAPID_PUBLIC_KEY and os.path.exists(VAPID_PEM_PATH)):
+    if not VAPID_PUBLIC_KEY:
+        logger.info("[webpush skipped] VAPID_PUBLIC_KEY not set")
+        return False
+    if not os.path.exists(VAPID_PEM_PATH):
+        logger.info(f"[webpush skipped] PEM file missing at {VAPID_PEM_PATH}")
         return False
     try:
         webpush(
@@ -336,6 +340,7 @@ def _send_webpush_sync(subscription_info: dict, payload: dict):
             vapid_private_key=VAPID_PEM_PATH,
             vapid_claims={"sub": VAPID_CLAIM_EMAIL},
         )
+        logger.info(f"[webpush sent] endpoint={subscription_info.get('endpoint', '')[:60]}")
         return True
     except WebPushException as e:
         # 404/410 -> expired subscription, signal for cleanup
@@ -729,10 +734,11 @@ async def push_public_key(user: dict = Depends(get_current_user)):
 
 @api_router.post("/push/subscribe")
 async def push_subscribe(sub: PushSubscription, user: dict = Depends(get_current_user)):
+    keys = dict(sub.keys)
     doc = {
         "user_id": str(user["_id"]),
         "endpoint": sub.endpoint,
-        "subscription": {"endpoint": sub.endpoint, "keys": sub.keys},
+        "subscription": {"endpoint": sub.endpoint, "keys": keys},
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.push_subscriptions.update_one(
@@ -745,8 +751,12 @@ async def push_subscribe(sub: PushSubscription, user: dict = Depends(get_current
         "url": "/settings",
         "tag": "robotics-hub-test",
     }
-    sub_info = {"endpoint": sub.endpoint, "keys": sub.keys}
-    asyncio.create_task(asyncio.to_thread(_send_webpush_sync, sub_info, test_payload))
+    sub_info = {"endpoint": sub.endpoint, "keys": keys}
+    try:
+        result = await asyncio.to_thread(_send_webpush_sync, sub_info, test_payload)
+        logger.info(f"[test push] result={result} user={str(user['_id'])}")
+    except Exception as e:
+        logger.error(f"[test push error] {e}")
     return {"ok": True}
 
 
