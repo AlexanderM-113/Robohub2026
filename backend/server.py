@@ -11,6 +11,7 @@ import base64
 import uuid
 import logging
 import asyncio
+import tempfile
 import secrets as pysecrets
 from datetime import datetime, timezone, timedelta
 
@@ -19,7 +20,6 @@ import bcrypt
 import requests
 import resend
 from pywebpush import webpush, WebPushException
-from py_vapid import Vapid
 from cryptography.fernet import Fernet, InvalidToken
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -75,17 +75,29 @@ SENDER_EMAIL = os.environ.get('SENDER_EMAIL', 'onboarding@resend.dev')
 
 VAPID_PUBLIC_KEY = os.environ.get('VAPID_PUBLIC_KEY', '')
 VAPID_PRIVATE_KEY_B64 = os.environ.get('VAPID_PRIVATE_KEY_B64', '')
+VAPID_PRIVATE_KEY = os.environ.get('VAPID_PRIVATE_KEY', '')
 VAPID_CLAIM_EMAIL = os.environ.get('VAPID_CLAIM_EMAIL', 'mailto:admin@example.com')
-VAPID_PEM_PATH = str(ROOT_DIR / 'vapid_private.pem')
+VAPID_PEM_PATH = str(Path(tempfile.gettempdir()) / 'robotics-hub-vapid_private.pem')
 
-# Pre-load VAPID key in memory so we don't depend on filesystem writes
-_vapid_obj = None
-if VAPID_PRIVATE_KEY_B64:
-    try:
-        _pem_bytes = base64.b64decode(VAPID_PRIVATE_KEY_B64)
-        _vapid_obj = Vapid.from_pem(_pem_bytes)
-    except Exception:
-        _vapid_obj = None
+
+def _load_vapid_private_key_bytes() -> bytes | None:
+    for raw in (VAPID_PRIVATE_KEY_B64, VAPID_PRIVATE_KEY):
+        if not raw:
+            continue
+        if "BEGIN" in raw:
+            pem = raw.encode("utf-8")
+            if b"PRIVATE KEY" in pem:
+                return pem
+        try:
+            pem = base64.b64decode(raw)
+            if b"BEGIN" in pem and b"PRIVATE KEY" in pem:
+                return pem
+        except Exception:
+            pass
+    return None
+
+
+_vapid_private_key_bytes = _load_vapid_private_key_bytes()
 
 # US carrier email-to-SMS gateways (free, best-effort)
 CARRIER_GATEWAYS = {
@@ -340,29 +352,16 @@ def _send_webpush_sync(subscription_info: dict, payload: dict):
     if not VAPID_PUBLIC_KEY:
         logger.info("[webpush skipped] VAPID_PUBLIC_KEY not set")
         return False
-    if not _vapid_obj and not os.path.exists(VAPID_PEM_PATH):
-        logger.info("[webpush skipped] no VAPID private key available (in-memory and PEM both missing)")
+    if not _vapid_private_key_bytes or not os.path.exists(VAPID_PEM_PATH):
+        logger.info("[webpush skipped] no VAPID private key available (temp PEM missing)")
         return False
     try:
-        if _vapid_obj:
-            # Use in-memory key (avoids filesystem dependency)
-            vv = _vapid_obj
-            headers = vv.sign({"sub": VAPID_CLAIM_EMAIL, "aud": subscription_info["endpoint"].split("/", 3)[0] + "//" + subscription_info["endpoint"].split("/")[2]})
-            from pywebpush import WebPusher
-            wp = WebPusher(subscription_info)
-            resp = wp.send(data=json.dumps(payload), headers=headers, ttl=86400)
-            if resp and hasattr(resp, 'status_code') and resp.status_code >= 400:
-                if resp.status_code in (404, 410):
-                    return "expired"
-                logger.error(f"[webpush failed] HTTP {resp.status_code}: {resp.text[:200] if hasattr(resp, 'text') else ''}")
-                return False
-        else:
-            webpush(
-                subscription_info=subscription_info,
-                data=json.dumps(payload),
-                vapid_private_key=VAPID_PEM_PATH,
-                vapid_claims={"sub": VAPID_CLAIM_EMAIL},
-            )
+        webpush(
+            subscription_info=subscription_info,
+            data=json.dumps(payload),
+            vapid_private_key=VAPID_PEM_PATH,
+            vapid_claims={"sub": VAPID_CLAIM_EMAIL},
+        )
         logger.info(f"[webpush sent] endpoint={subscription_info.get('endpoint', '')[:60]}")
         return True
     except WebPushException as e:
@@ -1257,15 +1256,16 @@ async def root():
 async def startup():
     await db.users.create_index("email", unique=True)
     await db.push_subscriptions.create_index("endpoint", unique=True)
-    # Write VAPID private key PEM to disk for pywebpush
-    if VAPID_PRIVATE_KEY_B64:
+    # Write VAPID private key PEM to a writable temp path for pywebpush
+    if _vapid_private_key_bytes:
         try:
-            pem = base64.b64decode(VAPID_PRIVATE_KEY_B64)
             with open(VAPID_PEM_PATH, "wb") as fh:
-                fh.write(pem)
+                fh.write(_vapid_private_key_bytes)
             logger.info("VAPID key ready")
         except Exception as e:
             logger.error(f"VAPID key write failed: {e}")
+    else:
+        logger.info("[webpush skipped] no VAPID private key env var found")
     # Seed owner
     existing = await db.users.find_one({"email": OWNER_EMAIL})
     if existing is None:
