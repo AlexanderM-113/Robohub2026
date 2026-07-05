@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { Loader2 } from "lucide-react";
 import { api, formatApiErrorDetail } from "@/lib/api";
 import logo from "@/assets/logo.webp";
@@ -21,6 +21,7 @@ export default function AuthPage() {
 
   const [loginData, setLoginData] = useState({ email: "", password: "" });
   const [regData, setRegData] = useState({ name: "", email: "", password: "" });
+  const [consent, setConsent] = useState(false);
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -137,13 +138,28 @@ export default function AuthPage() {
                     value={regData.password} onChange={(e) => setRegData({ ...regData, password: e.target.value })}
                     placeholder="At least 6 characters" className="rounded-xl h-11" />
                 </div>
-                <Button type="submit" disabled={loading} data-testid="register-submit-button"
+                <label className="flex items-start gap-2.5 cursor-pointer">
+                  <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)}
+                    className="mt-1 h-4 w-4 rounded border-border" required />
+                  <span className="text-sm text-muted-foreground leading-snug">
+                    I confirm that I (or my parent/school) consent to the collection of the information
+                    above per the{" "}
+                    <Link to="/privacy" className="text-primary underline underline-offset-2 hover:text-primary/80">
+                      Privacy Policy
+                    </Link>.
+                  </span>
+                </label>
+                <Button type="submit" disabled={loading || !consent} data-testid="register-submit-button"
                   className="w-full h-11 rounded-xl font-semibold">
                   {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Request to Join"}
                 </Button>
               </form>
             </TabsContent>
           </Tabs>
+
+          <p className="text-center text-xs text-muted-foreground mt-6">
+            <Link to="/privacy" className="underline underline-offset-2 hover:text-foreground">Privacy Policy</Link>
+          </p>
         </div>
       </div>
     </div>

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { Bell, Mail, MessageSquare, Loader2, User, Smartphone, Check } from "lucide-react";
+import { Link } from "react-router-dom";
+import { Bell, Mail, MessageSquare, Loader2, User, Smartphone, Check, Shield, Trash2 } from "lucide-react";
 import { api, formatApiErrorDetail } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { pushSupported, enablePush, disablePush, getExistingSubscription } from "@/lib/push";
@@ -26,7 +27,7 @@ const CARRIERS = [
 ];
 
 export default function Settings() {
-  const { user, updateUser } = useAuth();
+  const { user, updateUser, signOut } = useAuth();
   const [form, setForm] = useState({
     name: user?.name || "",
     phone: user?.phone || "",
@@ -184,6 +185,40 @@ export default function Settings() {
       <Button onClick={save} disabled={saving} className="rounded-xl h-11 gap-2" data-testid="settings-save-button">
         {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save Changes"}
       </Button>
+
+      {/* Privacy & Data */}
+      <Card className="p-6 lg:p-8 rounded-2xl space-y-5">
+        <div className="flex items-center gap-2">
+          <Shield className="h-5 w-5 text-primary" />
+          <h2 className="font-heading text-lg font-semibold">Privacy & Data</h2>
+        </div>
+        <div className="space-y-4">
+          <Link to="/privacy" className="text-sm text-primary underline underline-offset-2 hover:text-primary/80">
+            View Privacy Policy
+          </Link>
+          {user?.role !== "owner" && (
+            <div className="rounded-xl border border-destructive/30 p-4">
+              <p className="font-medium text-destructive">Delete My Account</p>
+              <p className="text-sm text-muted-foreground mt-1 mb-3">
+                Permanently delete your account and all associated data (messages, DMs, files). This cannot be undone.
+              </p>
+              <Button variant="destructive" className="rounded-xl h-10 gap-2" data-testid="delete-account-button"
+                onClick={async () => {
+                  if (!window.confirm("Are you sure you want to permanently delete your account and all your data? This cannot be undone.")) return;
+                  try {
+                    await api.delete("/auth/me");
+                    signOut();
+                    toast.success("Account deleted");
+                  } catch (err) {
+                    toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Could not delete account");
+                  }
+                }}>
+                <Trash2 className="h-4 w-4" /> Delete Account
+              </Button>
+            </div>
+          )}
+        </div>
+      </Card>
     </div>
   );
 }

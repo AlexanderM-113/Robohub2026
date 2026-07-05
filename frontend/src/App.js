@@ -13,6 +13,7 @@ import Files from "@/pages/Files";
 import CalendarPage from "@/pages/CalendarPage";
 import Settings from "@/pages/Settings";
 import TeamPage from "@/pages/TeamPage";
+import PrivacyPolicy from "@/pages/PrivacyPolicy";
 
 function LoginRoute() {
   const { user, ready } = useAuth();
@@ -27,6 +28,7 @@ function App() {
         <AuthProvider>
           <Routes>
             <Route path="/login" element={<LoginRoute />} />
+            <Route path="/privacy" element={<PrivacyPolicy />} />
             <Route
               element={
                 <ProtectedRoute>
