@@ -19,6 +19,7 @@ import bcrypt
 import requests
 import resend
 from pywebpush import webpush, WebPushException
+from py_vapid import Vapid
 from cryptography.fernet import Fernet, InvalidToken
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -76,6 +77,15 @@ VAPID_PUBLIC_KEY = os.environ.get('VAPID_PUBLIC_KEY', '')
 VAPID_PRIVATE_KEY_B64 = os.environ.get('VAPID_PRIVATE_KEY_B64', '')
 VAPID_CLAIM_EMAIL = os.environ.get('VAPID_CLAIM_EMAIL', 'mailto:admin@example.com')
 VAPID_PEM_PATH = str(ROOT_DIR / 'vapid_private.pem')
+
+# Pre-load VAPID key in memory so we don't depend on filesystem writes
+_vapid_obj = None
+if VAPID_PRIVATE_KEY_B64:
+    try:
+        _pem_bytes = base64.b64decode(VAPID_PRIVATE_KEY_B64)
+        _vapid_obj = Vapid.from_pem(_pem_bytes)
+    except Exception:
+        _vapid_obj = None
 
 # US carrier email-to-SMS gateways (free, best-effort)
 CARRIER_GATEWAYS = {
@@ -330,20 +340,32 @@ def _send_webpush_sync(subscription_info: dict, payload: dict):
     if not VAPID_PUBLIC_KEY:
         logger.info("[webpush skipped] VAPID_PUBLIC_KEY not set")
         return False
-    if not os.path.exists(VAPID_PEM_PATH):
-        logger.info(f"[webpush skipped] PEM file missing at {VAPID_PEM_PATH}")
+    if not _vapid_obj and not os.path.exists(VAPID_PEM_PATH):
+        logger.info("[webpush skipped] no VAPID private key available (in-memory and PEM both missing)")
         return False
     try:
-        webpush(
-            subscription_info=subscription_info,
-            data=json.dumps(payload),
-            vapid_private_key=VAPID_PEM_PATH,
-            vapid_claims={"sub": VAPID_CLAIM_EMAIL},
-        )
+        if _vapid_obj:
+            # Use in-memory key (avoids filesystem dependency)
+            vv = _vapid_obj
+            headers = vv.sign({"sub": VAPID_CLAIM_EMAIL, "aud": subscription_info["endpoint"].split("/", 3)[0] + "//" + subscription_info["endpoint"].split("/")[2]})
+            from pywebpush import WebPusher
+            wp = WebPusher(subscription_info)
+            resp = wp.send(data=json.dumps(payload), headers=headers, ttl=86400)
+            if resp and hasattr(resp, 'status_code') and resp.status_code >= 400:
+                if resp.status_code in (404, 410):
+                    return "expired"
+                logger.error(f"[webpush failed] HTTP {resp.status_code}: {resp.text[:200] if hasattr(resp, 'text') else ''}")
+                return False
+        else:
+            webpush(
+                subscription_info=subscription_info,
+                data=json.dumps(payload),
+                vapid_private_key=VAPID_PEM_PATH,
+                vapid_claims={"sub": VAPID_CLAIM_EMAIL},
+            )
         logger.info(f"[webpush sent] endpoint={subscription_info.get('endpoint', '')[:60]}")
         return True
     except WebPushException as e:
-        # 404/410 -> expired subscription, signal for cleanup
         status = getattr(getattr(e, "response", None), "status_code", None)
         if status in (404, 410):
             return "expired"
@@ -722,6 +744,28 @@ async def post_message(channel_id: str, req: MessageCreate, user: dict = Depends
     if channel:
         asyncio.create_task(notify_new_message(channel, msg))
     return msg
+
+
+@api_router.delete("/channels/{channel_id}/messages/{message_id}")
+async def delete_message(channel_id: str, message_id: str, user: dict = Depends(get_current_user)):
+    msg = await db.messages.find_one({"id": message_id, "channel_id": channel_id})
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if msg["user_id"] != str(user["_id"]) and user.get("role") not in ("owner", "mentor"):
+        raise HTTPException(status_code=403, detail="Not allowed to delete this message")
+    await db.messages.delete_one({"id": message_id})
+    return {"ok": True}
+
+
+@api_router.delete("/dm/{other_id}/messages/{message_id}")
+async def delete_dm_message(other_id: str, message_id: str, user: dict = Depends(get_current_user)):
+    msg = await db.dm_messages.find_one({"id": message_id})
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if msg["sender_id"] != str(user["_id"]) and user.get("role") not in ("owner", "mentor"):
+        raise HTTPException(status_code=403, detail="Not allowed to delete this message")
+    await db.dm_messages.delete_one({"id": message_id})
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
@@ -1156,6 +1200,10 @@ async def delete_user(user_id: str, user: dict = Depends(require_roles("owner"))
         raise HTTPException(status_code=400, detail="The owner account cannot be deleted")
     await db.users.delete_one({"_id": oid})
     await db.push_subscriptions.delete_many({"user_id": user_id})
+    # Cascade: remove all user data
+    await db.messages.delete_many({"user_id": user_id})
+    await db.dm_messages.delete_many({"$or": [{"sender_id": user_id}, {"recipient_id": user_id}]})
+    await db.files.update_many({"uploaded_by": user_id}, {"$set": {"is_deleted": True}})
     return {"ok": True}
 
 
@@ -1181,6 +1229,20 @@ async def dashboard(user: dict = Depends(get_current_user)):
         "member_count": member_count,
         "recent_files": recent_files,
     }
+
+
+@api_router.delete("/auth/me")
+async def delete_own_account(user: dict = Depends(get_current_user)):
+    """Allow a user to delete their own account and all associated data."""
+    uid = str(user["_id"])
+    if user.get("role") == "owner":
+        raise HTTPException(status_code=400, detail="The owner account cannot be self-deleted")
+    await db.users.delete_one({"_id": user["_id"]})
+    await db.push_subscriptions.delete_many({"user_id": uid})
+    await db.messages.delete_many({"user_id": uid})
+    await db.dm_messages.delete_many({"$or": [{"sender_id": uid}, {"recipient_id": uid}]})
+    await db.files.update_many({"uploaded_by": uid}, {"$set": {"is_deleted": True}})
+    return {"ok": True}
 
 
 @api_router.get("/")

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Hash, Lock, Send, Paperclip, X, Cpu, Wrench, Briefcase, Users2, Loader2, FileDown, Plus, Search, MessageCircle, Palette } from "lucide-react";
+import { Hash, Lock, Send, Paperclip, X, Cpu, Wrench, Briefcase, Users2, Loader2, FileDown, Plus, Search, MessageCircle, Palette, Trash2 } from "lucide-react";
 import { api, fileUrl, formatApiErrorDetail } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
@@ -13,15 +13,22 @@ const subIcons = { programming: Cpu, building: Wrench, business: Briefcase, team
 const subKey = (id) => id.split("-").slice(1).join("-");
 const initials = (n) => (n || "U").slice(0, 2).toUpperCase();
 
-function MessageBubble({ msg, mine }) {
+function MessageBubble({ msg, mine, canDelete, onDelete }) {
   return (
-    <div className={`flex flex-col ${mine ? "items-end" : "items-start"}`} data-testid="chat-message">
+    <div className={`group flex flex-col ${mine ? "items-end" : "items-start"}`} data-testid="chat-message">
       <div className="flex items-baseline gap-2 mb-1 px-1">
         <span className="text-xs font-semibold">{mine ? "You" : msg.user_name}</span>
         <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{msg.user_role}</span>
         <span className="text-[10px] text-muted-foreground">
           {new Date(msg.created_at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}
         </span>
+        {canDelete && (
+          <button onClick={() => onDelete(msg.id)}
+            className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
+            title="Delete message">
+            <Trash2 className="h-3 w-3" />
+          </button>
+        )}
       </div>
       <div className={`max-w-[75%] rounded-2xl px-4 py-2.5 ${mine ? "bg-primary text-primary-foreground" : "bg-muted text-foreground"}`}>
         {msg.text && <p className="text-[15px] leading-relaxed whitespace-pre-wrap break-words">{msg.text}</p>}
@@ -140,6 +147,20 @@ export default function Chat() {
       toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Could not send");
     } finally {
       setSending(false);
+    }
+  };
+
+  const handleDeleteMessage = async (msgId) => {
+    if (!selected) return;
+    try {
+      const url = selected.kind === "channel"
+        ? `/channels/${selected.channel.id}/messages/${msgId}`
+        : `/dm/${selected.user.id}/messages/${msgId}`;
+      await api.delete(url);
+      setMessages((m) => m.filter((msg) => msg.id !== msgId));
+      toast.success("Message deleted");
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Could not delete message");
     }
   };
 
@@ -267,7 +288,11 @@ export default function Chat() {
                 <p>No messages yet. Start the conversation!</p>
               </div>
             ) : (
-              messages.map((m) => <MessageBubble key={m.id} msg={m} mine={m.user_id === user?.id} />)
+              messages.map((m) => {
+                const mine = m.user_id === user?.id;
+                const canDelete = mine || user?.role === "owner" || user?.role === "mentor";
+                return <MessageBubble key={m.id} msg={m} mine={mine} canDelete={canDelete} onDelete={handleDeleteMessage} />;
+              })
             )}
             <div ref={bottomRef} />
           </div>
