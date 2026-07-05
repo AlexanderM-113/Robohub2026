@@ -36,6 +36,8 @@ services:
         sync: false
       - key: VAPID_PRIVATE_KEY_B64
         sync: false
+      - key: VAPID_PRIVATE_KEY      # optional alias: raw PEM or base64 PEM
+        sync: false
       - key: VAPID_CLAIM_EMAIL
         value: mailto:alexander_m113@outlook.com
       - key: EMAIL_MONTHLY_LIMIT
