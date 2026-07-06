@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { Hash, Lock, Send, Paperclip, X, Cpu, Wrench, Briefcase, Users2, Loader2, FileDown, Plus, Search, MessageCircle, Palette, Trash2 } from "lucide-react";
-import { api, fileUrl, formatApiErrorDetail } from "@/lib/api";
+import { api, formatApiErrorDetail } from "@/lib/api";
+import { getFileDownloadUrl, getFilePreviewObjectUrl } from "@/lib/fileAccess";
 import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,7 +14,7 @@ const subIcons = { programming: Cpu, building: Wrench, business: Briefcase, team
 const subKey = (id) => id.split("-").slice(1).join("-");
 const initials = (n) => (n || "U").slice(0, 2).toUpperCase();
 
-function MessageBubble({ msg, mine, canDelete, onDelete }) {
+function MessageBubble({ msg, mine, canDelete, onDelete, previewUrl, downloadUrl }) {
   return (
     <div className={`group flex flex-col ${mine ? "items-end" : "items-start"}`} data-testid="chat-message">
       <div className="flex items-baseline gap-2 mb-1 px-1">
@@ -35,11 +36,15 @@ function MessageBubble({ msg, mine, canDelete, onDelete }) {
         {msg.attachment && (
           <div className="mt-2">
             {msg.attachment.kind === "image" ? (
-              <a href={fileUrl(msg.attachment.file_id)} target="_blank" rel="noreferrer">
-                <img src={fileUrl(msg.attachment.file_id)} alt={msg.attachment.filename} className="rounded-lg max-h-52 border border-border/30" />
+              <a href={downloadUrl || previewUrl || "#"} target="_blank" rel="noreferrer">
+                {previewUrl ? (
+                  <img src={previewUrl} alt={msg.attachment.filename} className="rounded-lg max-h-52 border border-border/30" />
+                ) : (
+                  <div className="rounded-lg border border-border/30 px-4 py-8 text-sm text-muted-foreground">Loading preview...</div>
+                )}
               </a>
             ) : (
-              <a href={fileUrl(msg.attachment.file_id)} target="_blank" rel="noreferrer"
+              <a href={downloadUrl || "#"} target="_blank" rel="noreferrer"
                 className={`flex items-center gap-2 rounded-lg px-3 py-2 text-sm ${mine ? "bg-white/15" : "bg-background"}`}>
                 <FileDown className="h-4 w-4" />
                 <span className="truncate">{msg.attachment.filename}</span>
@@ -62,13 +67,15 @@ export default function Chat() {
   const [attachment, setAttachment] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [sending, setSending] = useState(false);
-  const bottomRef = useRef(null);
-  const fileRef = useRef(null);
-
-  // New DM dialog
+  const [results, setResults] = useState([]);
   const [dmOpen, setDmOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState([]);
+  const [attachmentPreviewUrls, setAttachmentPreviewUrls] = useState({});
+  const [attachmentDownloadUrls, setAttachmentDownloadUrls] = useState({});
+  const bottomRef = useRef(null);
+  const fileRef = useRef(null);
+  const attachmentPreviewRef = useRef({});
+  const attachmentPreviewObjectUrlsRef = useRef([]);
 
   const loadThreads = useCallback(() => {
     api.get("/dm/threads").then(({ data }) => setDmThreads(data)).catch(() => {});
@@ -90,6 +97,53 @@ export default function Chat() {
     }, 250);
     return () => clearTimeout(t);
   }, [query, dmOpen]);
+
+  useEffect(() => () => {
+    attachmentPreviewObjectUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+    attachmentPreviewObjectUrlsRef.current = [];
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      const previewUpdates = {};
+      const downloadUpdates = {};
+      for (const msg of messages) {
+        const att = msg.attachment;
+        if (!att) continue;
+        if (att.kind === "image" && !attachmentPreviewRef.current[att.file_id]) {
+          try {
+            const url = await getFilePreviewObjectUrl(att.file_id);
+            if (cancelled) {
+              URL.revokeObjectURL(url);
+              return;
+            }
+            attachmentPreviewRef.current[att.file_id] = url;
+            attachmentPreviewObjectUrlsRef.current.push(url);
+            previewUpdates[att.file_id] = url;
+          } catch {
+            // ignore
+          }
+        }
+        if (!attachmentDownloadUrls[att.file_id]) {
+          try {
+            downloadUpdates[att.file_id] = await getFileDownloadUrl(att.file_id);
+          } catch {
+            // ignore
+          }
+        }
+      }
+      if (cancelled) return;
+      if (Object.keys(previewUpdates).length) {
+        setAttachmentPreviewUrls((prev) => ({ ...prev, ...previewUpdates }));
+      }
+      if (Object.keys(downloadUpdates).length) {
+        setAttachmentDownloadUrls((prev) => ({ ...prev, ...downloadUpdates }));
+      }
+    };
+    run();
+    return () => { cancelled = true; };
+  }, [messages, attachmentDownloadUrls]);
 
   const loadMessages = useCallback(async (sel) => {
     if (!sel) return;
@@ -234,7 +288,7 @@ export default function Chat() {
                       <Avatar className="h-9 w-9"><AvatarFallback className="bg-primary text-primary-foreground text-xs font-semibold">{initials(u.name)}</AvatarFallback></Avatar>
                       <div className="min-w-0">
                         <p className="text-sm font-medium truncate">{u.name}</p>
-                        <p className="text-xs text-muted-foreground truncate capitalize">{u.role} · {u.email}</p>
+                        <p className="text-xs text-muted-foreground truncate capitalize">{u.role}</p>
                       </div>
                     </button>
                   ))}
@@ -291,7 +345,18 @@ export default function Chat() {
               messages.map((m) => {
                 const mine = m.user_id === user?.id;
                 const canDelete = mine || user?.role === "owner" || user?.role === "mentor";
-                return <MessageBubble key={m.id} msg={m} mine={mine} canDelete={canDelete} onDelete={handleDeleteMessage} />;
+                const att = m.attachment;
+                return (
+                  <MessageBubble
+                    key={m.id}
+                    msg={m}
+                    mine={mine}
+                    canDelete={canDelete}
+                    onDelete={handleDeleteMessage}
+                    previewUrl={att ? attachmentPreviewUrls[att.file_id] : null}
+                    downloadUrl={att ? attachmentDownloadUrls[att.file_id] : null}
+                  />
+                );
               })
             )}
             <div ref={bottomRef} />

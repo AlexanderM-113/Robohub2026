@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import { Upload, Image as ImageIcon, FileCode2, FileArchive, Trash2, Download, Loader2, FolderOpen } from "lucide-react";
-import { api, fileUrl, formatApiErrorDetail } from "@/lib/api";
+import { api, formatApiErrorDetail } from "@/lib/api";
+import { getFileDownloadUrl, getFilePreviewObjectUrl } from "@/lib/fileAccess";
 import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -21,10 +22,59 @@ export default function Files() {
   const [files, setFiles] = useState([]);
   const [filter, setFilter] = useState("all");
   const [uploading, setUploading] = useState(false);
+  const [previewUrls, setPreviewUrls] = useState({});
+  const [downloadUrls, setDownloadUrls] = useState({});
   const fileRef = useRef(null);
+  const previewUrlRef = useRef({});
+  const previewObjectUrlsRef = useRef([]);
 
   const load = () => api.get("/files").then(({ data }) => setFiles(data)).catch(() => {});
   useEffect(() => { load(); }, []);
+
+  useEffect(() => () => {
+    previewObjectUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+    previewObjectUrlsRef.current = [];
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      const previewUpdates = {};
+      const downloadUpdates = {};
+      for (const f of files) {
+        if (f.kind === "image" && !previewUrlRef.current[f.id]) {
+          try {
+            const url = await getFilePreviewObjectUrl(f.id);
+            if (cancelled) {
+              URL.revokeObjectURL(url);
+              return;
+            }
+            previewUrlRef.current[f.id] = url;
+            previewObjectUrlsRef.current.push(url);
+            previewUpdates[f.id] = url;
+          } catch {
+            // ignore
+          }
+        }
+        if (!downloadUrls[f.id]) {
+          try {
+            downloadUpdates[f.id] = await getFileDownloadUrl(f.id);
+          } catch {
+            // ignore
+          }
+        }
+      }
+      if (cancelled) return;
+      if (Object.keys(previewUpdates).length) {
+        setPreviewUrls((prev) => ({ ...prev, ...previewUpdates }));
+      }
+      if (Object.keys(downloadUpdates).length) {
+        setDownloadUrls((prev) => ({ ...prev, ...downloadUpdates }));
+      }
+    };
+    run();
+    return () => { cancelled = true; };
+  }, [files, downloadUrls]);
 
   const handleUpload = async (e) => {
     const file = e.target.files?.[0];
@@ -96,8 +146,12 @@ export default function Files() {
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-5">
             {images.map((f) => (
               <Card key={f.id} className="overflow-hidden rounded-2xl group" data-testid={`file-${f.id}`}>
-                <a href={fileUrl(f.id)} target="_blank" rel="noreferrer" className="block aspect-video bg-muted overflow-hidden">
-                  <img src={fileUrl(f.id)} alt={f.original_filename} className="h-full w-full object-cover group-hover:scale-105 transition-transform" />
+                <a href={downloadUrls[f.id] || previewUrls[f.id] || "#"} target="_blank" rel="noreferrer" className="block aspect-video bg-muted overflow-hidden">
+                  {previewUrls[f.id] ? (
+                    <img src={previewUrls[f.id]} alt={f.original_filename} className="h-full w-full object-cover group-hover:scale-105 transition-transform" />
+                  ) : (
+                    <div className="h-full w-full flex items-center justify-center text-muted-foreground text-sm">Loading preview...</div>
+                  )}
                 </a>
                 <div className="p-3 flex items-center justify-between gap-2">
                   <div className="min-w-0">
@@ -132,7 +186,7 @@ export default function Files() {
                     <p className="font-medium truncate">{f.original_filename}</p>
                     <p className="text-xs text-muted-foreground">{f.uploader_name} · {fmtSize(f.size)}</p>
                   </div>
-                  <a href={fileUrl(f.id)} target="_blank" rel="noreferrer" download
+                  <a href={downloadUrls[f.id] || "#"} target="_blank" rel="noreferrer" download
                     className="text-muted-foreground hover:text-primary" data-testid={`download-${f.id}`}>
                     <Download className="h-5 w-5" />
                   </a>

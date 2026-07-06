@@ -190,9 +190,12 @@ class TestFiles:
         assert r.status_code == 200
         assert len(r.content) > 0
 
-    def test_download_with_query_auth(self, member_token):
+    def test_download_with_signed_download_token(self, member_token):
         fid = pytest.image_file_id
-        r = requests.get(f"{API}/files/{fid}/download?auth={member_token}")
+        token_resp = requests.get(f"{API}/files/{fid}/download-token", headers=_auth_headers(member_token))
+        assert token_resp.status_code == 200
+        download_token = token_resp.json()["token"]
+        r = requests.get(f"{API}/files/{fid}/download?download_token={download_token}")
         assert r.status_code == 200
 
     def test_download_without_auth(self):
