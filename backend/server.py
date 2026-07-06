@@ -348,6 +348,16 @@ def put_object(path: str, data: bytes, content_type: str) -> dict:
     return resp.json()
 
 
+def delete_object(path: str):
+    if STORAGE_PROVIDER == "r2":
+        _get_r2_client().delete_object(Bucket=R2_BUCKET, Key=path)
+        return
+    key = init_storage()
+    resp = requests.delete(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
+    if resp.status_code not in (200, 204, 404):
+        resp.raise_for_status()
+
+
 def get_object(path: str):
     if STORAGE_PROVIDER == "r2":
         obj = _get_r2_client().get_object(Bucket=R2_BUCKET, Key=path)
@@ -363,27 +373,27 @@ def get_object(path: str):
 # ---------------------------------------------------------------------------
 def _send_email_sync(to_email: str, subject: str, html: str):
     if not RESEND_API_KEY:
-        logger.info(f"[email skipped - no key] to={to_email} subject={subject}")
+        logger.info("[email skipped - no key]")
         return
     try:
         resend.api_key = RESEND_API_KEY
         resend.Emails.send({"from": SENDER_EMAIL, "to": [to_email], "subject": subject, "html": html})
-        logger.info(f"[email sent] to={to_email}")
+        logger.info("[email sent] ok")
     except Exception as e:
-        logger.error(f"[email failed] to={to_email} err={e}")
+        logger.error(f"[email failed] {e}")
 
 
 def _send_email_plain_sync(to_email: str, subject: str, text: str):
     """Plain-text email, used for email-to-SMS carrier gateways."""
     if not RESEND_API_KEY:
-        logger.info(f"[sms-email skipped - no key] to={to_email}")
+        logger.info("[sms-email skipped - no key]")
         return
     try:
         resend.api_key = RESEND_API_KEY
         resend.Emails.send({"from": SENDER_EMAIL, "to": [to_email], "subject": subject, "text": text})
-        logger.info(f"[sms-email sent] to={to_email}")
+        logger.info("[sms-email sent] ok")
     except Exception as e:
-        logger.error(f"[sms-email failed] to={to_email} err={e}")
+        logger.error(f"[sms-email failed] {e}")
 
 
 def _normalize_phone(phone: str) -> str:
@@ -404,7 +414,7 @@ def _send_webpush_sync(subscription_info: dict, payload: dict):
             vapid_private_key=_vapid,
             vapid_claims={"sub": VAPID_CLAIM_EMAIL},
         )
-        logger.info(f"[webpush sent] endpoint={subscription_info.get('endpoint', '')[:60]}")
+        logger.info("[webpush sent] ok")
         return True
     except WebPushException as e:
         status = getattr(getattr(e, "response", None), "status_code", None)
@@ -415,6 +425,78 @@ def _send_webpush_sync(subscription_info: dict, payload: dict):
     except Exception as e:
         logger.error(f"[webpush error] {e}")
         return False
+
+
+def _file_download_token(file_id: str, user_id: str) -> str:
+    payload = {
+        "type": "file_download",
+        "file_id": file_id,
+        "user_id": user_id,
+        "exp": datetime.now(timezone.utc) + timedelta(seconds=FILE_DOWNLOAD_TOKEN_TTL_SECONDS),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+async def _file_visible_to_user(file_id: str, user: dict) -> bool:
+    uid = str(user["_id"])
+    if not user.get("role"):
+        return False
+    rec = await db.files.find_one({"id": file_id, "is_deleted": False}, {"_id": 0})
+    if not rec:
+        return False
+    if rec.get("uploaded_by") == uid:
+        return True
+
+    visible_channels = [c["id"] for c in CHANNELS if channel_visible_to(c["id"], user.get("role"))]
+    if visible_channels:
+        channel_match = await db.messages.find_one(
+            {"channel_id": {"$in": visible_channels}, "attachment.file_id": file_id},
+            {"_id": 0},
+        )
+        if channel_match:
+            return True
+
+    dm_match = await db.dm_messages.find_one(
+        {
+            "attachment.file_id": file_id,
+            "$or": [{"sender_id": uid}, {"recipient_id": uid}],
+        },
+        {"_id": 0},
+    )
+    return dm_match is not None
+
+
+async def _issue_file_download_token_or_403(file_id: str, user: dict) -> str:
+    if not await _file_visible_to_user(file_id, user):
+        raise HTTPException(status_code=403, detail="Not allowed to access this file")
+    return _file_download_token(file_id, str(user["_id"]))
+
+
+async def _resolve_file_download_user(file_id: str, request: Request, download_token: Optional[str]) -> dict:
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        return await get_current_user(request)
+    if not download_token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        payload = jwt.decode(download_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Download token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid download token")
+    if payload.get("type") != "file_download":
+        raise HTTPException(status_code=401, detail="Invalid download token")
+    if payload.get("file_id") != file_id:
+        raise HTTPException(status_code=401, detail="Invalid download token")
+    try:
+        user = await db.users.find_one({"_id": ObjectId(payload["user_id"])})
+    except Exception:
+        user = None
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    if user.get("status") == "pending":
+        raise HTTPException(status_code=403, detail="Your account is awaiting owner approval")
+    return user
 
 
 def _email_template(title: str, body: str) -> str:
@@ -468,14 +550,14 @@ async def dispatch_email(to_email: str, subject: str, html: str):
     if await _reserve_email_quota():
         asyncio.create_task(asyncio.to_thread(_send_email_sync, to_email, subject, html))
     else:
-        logger.warning(f"[email quota reached - {EMAIL_MONTHLY_LIMIT}/mo] skipped to={to_email}")
+        logger.warning(f"[email quota reached - {EMAIL_MONTHLY_LIMIT}/mo] skipped")
 
 
 async def dispatch_sms_email(addr: str, subject: str, text: str):
     if await _reserve_email_quota():
         asyncio.create_task(asyncio.to_thread(_send_email_plain_sync, addr, subject, text))
     else:
-        logger.warning(f"[sms quota reached - {EMAIL_MONTHLY_LIMIT}/mo] skipped to={addr}")
+        logger.warning(f"[sms quota reached - {EMAIL_MONTHLY_LIMIT}/mo] skipped")
 
 
 async def notify_owner_pending_signup(new_user: dict):
@@ -560,9 +642,16 @@ async def build_and_send_weekly_digest():
             rows.append(f"<li><b>{cnt}</b> new in {label}</li>")
         msgs_html = f"<ul>{''.join(rows)}</ul>" if rows else "<p>No new messages this week.</p>"
 
+        visible_new_files = []
+        for f in new_files:
+            if await _file_visible_to_user(f["id"], u):
+                visible_new_files.append(f)
         files_html = (
-            "<ul>" + "".join(f"<li>{f['original_filename']} <span style='color:#888'>· {f['uploader_name']}</span></li>" for f in new_files) + "</ul>"
-            if new_files else "<p>No new files this week.</p>"
+            "<ul>" + "".join(
+                f"<li>{f['original_filename']} <span style='color:#888'>· {f['uploader_name']}</span></li>"
+                for f in visible_new_files
+            ) + "</ul>"
+            if visible_new_files else "<p>No new files this week.</p>"
         )
 
         events_html = (
@@ -585,14 +674,14 @@ async def build_and_send_weekly_digest():
 
 def _send_email_sync(to_email: str, subject: str, html: str):
     if not RESEND_API_KEY:
-        logger.info(f"[email skipped - no key] to={to_email} subject={subject}")
+        logger.info("[email skipped - no key]")
         return
     try:
         resend.api_key = RESEND_API_KEY
         resend.Emails.send({"from": SENDER_EMAIL, "to": [to_email], "subject": subject, "html": html})
-        logger.info(f"[email sent] to={to_email}")
+        logger.info("[email sent] ok")
     except Exception as e:
-        logger.error(f"[email failed] to={to_email} err={e}")
+        logger.error(f"[email failed] {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -633,6 +722,9 @@ class SettingsUpdate(BaseModel):
 class PushSubscription(BaseModel):
     endpoint: str
     keys: dict
+
+
+FILE_DOWNLOAD_TOKEN_TTL_SECONDS = 5 * 60
 
 
 class PushUnsubscribe(BaseModel):
@@ -914,7 +1006,7 @@ async def search_users(q: Optional[str] = None, user: dict = Depends(get_current
         ]}
     users = await db.users.find(query).sort("name", 1).to_list(50)
     return [
-        {"id": str(u["_id"]), "name": u.get("name", ""), "role": u.get("role", "member"), "email": u["email"]}
+        {"id": str(u["_id"]), "name": u.get("name", ""), "role": u.get("role", "member")}
         for u in users if str(u["_id"]) != me
     ][:20]
 
@@ -1057,29 +1149,21 @@ async def list_files(kind: Optional[str] = None, user: dict = Depends(get_curren
     if kind:
         query["kind"] = kind
     files = await db.files.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
-    return files
+    visible = []
+    for f in files:
+        if await _file_visible_to_user(f["id"], user):
+            visible.append(f)
+    return visible
 
 
 @api_router.get("/files/{file_id}/download")
-async def download_file(file_id: str, request: Request, auth: Optional[str] = Query(None)):
-    # auth via header or query param (for <img> tags)
-    token = None
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer "):
-        token = auth_header[7:]
-    elif auth:
-        token = auth
-    elif request.cookies.get("access_token"):
-        token = request.cookies.get("access_token")
-    if not token:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    try:
-        jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid token")
+async def download_file(file_id: str, request: Request, download_token: Optional[str] = Query(None)):
+    user = await _resolve_file_download_user(file_id, request, download_token)
     rec = await db.files.find_one({"id": file_id, "is_deleted": False}, {"_id": 0})
     if not rec:
         raise HTTPException(status_code=404, detail="File not found")
+    if not await _file_visible_to_user(file_id, user):
+        raise HTTPException(status_code=403, detail="Not allowed to access this file")
     try:
         content, ctype = await asyncio.to_thread(get_object, rec["storage_path"])
     except Exception as e:
@@ -1089,6 +1173,15 @@ async def download_file(file_id: str, request: Request, auth: Optional[str] = Qu
     return Response(content=content, media_type=rec.get("content_type", ctype), headers=headers)
 
 
+@api_router.get("/files/{file_id}/download-token")
+async def file_download_token(file_id: str, user: dict = Depends(get_current_user)):
+    token = await _issue_file_download_token_or_403(file_id, user)
+    return {
+        "token": token,
+        "expires_in": FILE_DOWNLOAD_TOKEN_TTL_SECONDS,
+    }
+
+
 @api_router.delete("/files/{file_id}")
 async def delete_file(file_id: str, user: dict = Depends(get_current_user)):
     rec = await db.files.find_one({"id": file_id, "is_deleted": False})
@@ -1096,6 +1189,11 @@ async def delete_file(file_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="File not found")
     if rec["uploaded_by"] != str(user["_id"]) and user.get("role") not in ("owner", "mentor"):
         raise HTTPException(status_code=403, detail="Not allowed to delete this file")
+    try:
+        await asyncio.to_thread(delete_object, rec["storage_path"])
+    except Exception as e:
+        logger.error(f"delete failed: {e}")
+        raise HTTPException(status_code=500, detail="Delete failed")
     await db.files.update_one({"id": file_id}, {"$set": {"is_deleted": True}})
     return {"ok": True}
 
@@ -1252,12 +1350,23 @@ async def delete_user(user_id: str, user: dict = Depends(require_roles("owner"))
         raise HTTPException(status_code=404, detail="User not found")
     if target.get("role") == "owner":
         raise HTTPException(status_code=400, detail="The owner account cannot be deleted")
+    owned_files = await db.files.find({"uploaded_by": user_id, "is_deleted": False}, {"_id": 0}).to_list(1000)
+    for f in owned_files:
+        try:
+            await asyncio.to_thread(delete_object, f["storage_path"])
+        except Exception as e:
+            logger.error(f"delete failed: {e}")
+            raise HTTPException(status_code=500, detail="Delete failed")
     await db.users.delete_one({"_id": oid})
     await db.push_subscriptions.delete_many({"user_id": user_id})
     # Cascade: remove all user data
     await db.messages.delete_many({"user_id": user_id})
     await db.dm_messages.delete_many({"$or": [{"sender_id": user_id}, {"recipient_id": user_id}]})
     await db.files.update_many({"uploaded_by": user_id}, {"$set": {"is_deleted": True}})
+    await db.events.update_many(
+        {"created_by": user_id},
+        {"$set": {"created_by": None, "creator_name": "Deleted user"}},
+    )
     return {"ok": True}
 
 
@@ -1270,12 +1379,19 @@ async def dashboard(user: dict = Depends(get_current_user)):
     next_event = await db.events.find_one({"date": {"$gte": now}}, {"_id": 0}, sort=[("date", 1)])
     if not next_event:
         next_event = await db.events.find_one({}, {"_id": 0}, sort=[("date", -1)])
-    file_count = await db.files.count_documents({"is_deleted": False})
+    all_files = await db.files.find({"is_deleted": False}, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    recent_files = []
+    file_count = 0
+    for f in all_files:
+        if await _file_visible_to_user(f["id"], user):
+            file_count += 1
+            recent_files.append(f)
+        if len(recent_files) == 4:
+            break
     role = user.get("role")
     visible_ids = [c["id"] for c in CHANNELS if channel_visible_to(c["id"], role)]
     msg_count = await db.messages.count_documents({"channel_id": {"$in": visible_ids}})
     member_count = await db.users.count_documents({})
-    recent_files = await db.files.find({"is_deleted": False}, {"_id": 0}).sort("created_at", -1).to_list(4)
     return {
         "next_event": next_event,
         "file_count": file_count,
@@ -1291,11 +1407,22 @@ async def delete_own_account(user: dict = Depends(get_current_user)):
     uid = str(user["_id"])
     if user.get("role") == "owner":
         raise HTTPException(status_code=400, detail="The owner account cannot be self-deleted")
+    owned_files = await db.files.find({"uploaded_by": uid, "is_deleted": False}, {"_id": 0}).to_list(1000)
+    for f in owned_files:
+        try:
+            await asyncio.to_thread(delete_object, f["storage_path"])
+        except Exception as e:
+            logger.error(f"delete failed: {e}")
+            raise HTTPException(status_code=500, detail="Delete failed")
     await db.users.delete_one({"_id": user["_id"]})
     await db.push_subscriptions.delete_many({"user_id": uid})
     await db.messages.delete_many({"user_id": uid})
     await db.dm_messages.delete_many({"$or": [{"sender_id": uid}, {"recipient_id": uid}]})
     await db.files.update_many({"uploaded_by": uid}, {"$set": {"is_deleted": True}})
+    await db.events.update_many(
+        {"created_by": uid},
+        {"$set": {"created_by": None, "creator_name": "Deleted user"}},
+    )
     return {"ok": True}
 
 

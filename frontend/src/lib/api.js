@@ -17,11 +17,6 @@ export const BACKEND_API = API;
 // Fire-and-forget ping to wake the Render free-tier backend on page load.
 api.get("/").catch(() => {});
 
-export function fileUrl(fileId) {
-  const token = localStorage.getItem("rh_token");
-  return `${API}/files/${fileId}/download?auth=${token}`;
-}
-
 export function formatApiErrorDetail(detail) {
   if (detail == null) return "Something went wrong. Please try again.";
   if (typeof detail === "string") return detail;
