@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { useAuth } from "@/context/AuthContext";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger,
 } from "@/components/ui/dialog";
@@ -20,6 +21,7 @@ import { toast } from "sonner";
 const emptyForm = { name: "", email: "", password: "", role: "member" };
 
 export default function TeamPage() {
+  const { user } = useAuth();
   const [users, setUsers] = useState(null);
   const [pending, setPending] = useState([]);
   const [pendingRoles, setPendingRoles] = useState({});
@@ -32,6 +34,19 @@ export default function TeamPage() {
   const load = () => api.get("/users").then(({ data }) => setUsers(data)).catch(() => setUsers([]));
   const loadPending = () => api.get("/users/pending").then(({ data }) => setPending(data)).catch(() => setPending([]));
   useEffect(() => { load(); loadPending(); }, []);
+
+  if (user?.role !== "owner") {
+    return (
+      <div className="max-w-3xl mx-auto p-6 lg:p-8">
+        <Card className="p-8 rounded-2xl">
+          <h1 className="font-heading text-2xl font-bold mb-2">Team Members</h1>
+          <p className="text-muted-foreground">
+            Only the owner can manage team permissions.
+          </p>
+        </Card>
+      </div>
+    );
+  }
 
   const approve = async (u) => {
     setBusyId(u.id);
@@ -65,7 +80,7 @@ export default function TeamPage() {
     try {
       await api.put(`/users/${id}/role`, { role });
       toast.success("Role updated");
-      setUsers((u) => u.map((x) => (x.id === id ? { ...x, role } : x)));
+      load();
     } catch (err) {
       toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Could not update role");
     }
