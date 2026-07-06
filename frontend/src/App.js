@@ -14,6 +14,8 @@ import CalendarPage from "@/pages/CalendarPage";
 import Settings from "@/pages/Settings";
 import TeamPage from "@/pages/TeamPage";
 import PrivacyPolicy from "@/pages/PrivacyPolicy";
+import TermsOfService from "@/pages/TermsOfService";
+import TodoPage from "@/pages/TodoPage";
 
 function LoginRoute() {
   const { user, ready } = useAuth();
@@ -29,6 +31,7 @@ function App() {
           <Routes>
             <Route path="/login" element={<LoginRoute />} />
             <Route path="/privacy" element={<PrivacyPolicy />} />
+            <Route path="/terms" element={<TermsOfService />} />
             <Route
               element={
                 <ProtectedRoute>
@@ -41,6 +44,7 @@ function App() {
               <Route path="/files" element={<Files />} />
               <Route path="/calendar" element={<CalendarPage />} />
               <Route path="/settings" element={<Settings />} />
+              <Route path="/todos" element={<TodoPage />} />
               <Route path="/team" element={<TeamPage />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />

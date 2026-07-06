@@ -28,6 +28,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import serialization
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from fastapi import (
     FastAPI, APIRouter, Depends, HTTPException, Request, Response,
@@ -172,6 +173,36 @@ def decrypt_field(ciphertext: str) -> str:
         return _fernet.decrypt(ciphertext.encode('utf-8')).decode('utf-8')
     except (InvalidToken, Exception):
         return ciphertext
+
+
+# ---------------------------------------------------------------------------
+# Content filtering — block profanity, slurs, sexual innuendos, 18+ content
+# ---------------------------------------------------------------------------
+_BLOCKED_WORDS = {
+    "fuck", "shit", "ass", "bitch", "damn", "hell", "crap", "dick", "cock",
+    "pussy", "whore", "slut", "bastard", "motherfucker", "fucker", "asshole",
+    "bullshit", "dumbass", "jackass", "piss", "cunt", "twat", "wanker",
+    "nigger", "nigga", "faggot", "retard", "retarded",
+    "porn", "hentai", "nude", "nudes", "naked", "xxx", "nsfw", "onlyfans",
+    "blowjob", "handjob", "dildo", "orgasm", "masturbat", "cumshot", "creampie",
+    "anal", "bondage", "fetish", "kinky", "horny", "sexy", "sexting",
+}
+
+_BLOCKED_IMAGE_EXTENSIONS = {".exe", ".bat", ".cmd", ".scr", ".com"}
+
+
+def _contains_blocked_content(text: str) -> str | None:
+    if not text:
+        return None
+    lower = text.lower()
+    words = re.split(r'[\s\W]+', lower)
+    for w in words:
+        if w in _BLOCKED_WORDS:
+            return w
+        for bw in _BLOCKED_WORDS:
+            if bw in w:
+                return bw
+    return None
 
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -746,6 +777,21 @@ class ApproveRequest(BaseModel):
     role: str = "member"
 
 
+class TodoCreate(BaseModel):
+    title: str
+    description: str = ""
+    deadline: Optional[str] = None  # ISO datetime
+    assigned_to: Optional[str] = None  # user ID
+
+
+class TodoUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    deadline: Optional[str] = None
+    assigned_to: Optional[str] = None
+    completed: Optional[bool] = None
+
+
 # ---------------------------------------------------------------------------
 # Auth endpoints
 # ---------------------------------------------------------------------------
@@ -850,6 +896,9 @@ async def post_message(channel_id: str, req: MessageCreate, user: dict = Depends
         raise HTTPException(status_code=404, detail="Channel not found")
     if not channel_visible_to(channel_id, user.get("role")):
         raise HTTPException(status_code=403, detail="You don't have access to this channel")
+    blocked = _contains_blocked_content(req.text)
+    if blocked:
+        raise HTTPException(status_code=400, detail=f"Message contains inappropriate content and cannot be sent.")
     attachment = None
     if req.attachment_file_id:
         f = await db.files.find_one({"id": req.attachment_file_id, "is_deleted": False}, {"_id": 0})
@@ -1071,6 +1120,9 @@ async def get_dm(other_id: str, user: dict = Depends(get_current_user)):
 
 @api_router.post("/dm/{other_id}/messages")
 async def post_dm(other_id: str, req: MessageCreate, user: dict = Depends(get_current_user)):
+    blocked = _contains_blocked_content(req.text)
+    if blocked:
+        raise HTTPException(status_code=400, detail=f"Message contains inappropriate content and cannot be sent.")
     me = str(user["_id"])
     ou = await _resolve_other(other_id, me)
     attachment = None
@@ -1114,12 +1166,22 @@ def classify_file(filename: str, content_type: str) -> str:
 
 @api_router.post("/files/upload")
 async def upload_file(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    blocked = _contains_blocked_content(file.filename)
+    if blocked:
+        raise HTTPException(status_code=400, detail="File name contains inappropriate content.")
+    fname_lower = file.filename.lower()
+    if any(fname_lower.endswith(ext) for ext in _BLOCKED_IMAGE_EXTENSIONS):
+        raise HTTPException(status_code=400, detail="This file type is not allowed.")
+    content_type = file.content_type or "application/octet-stream"
+    if content_type.startswith("video/") or content_type.startswith("image/"):
+        blocked = _contains_blocked_content(file.filename.rsplit(".", 1)[0] if "." in file.filename else file.filename)
+        if blocked:
+            raise HTTPException(status_code=400, detail="File contains inappropriate content reference.")
     data = await file.read()
     if len(data) > 25 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="File too large (max 25MB)")
     ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "bin"
     path = f"{APP_NAME}/uploads/{str(user['_id'])}/{uuid.uuid4()}.{ext}"
-    content_type = file.content_type or "application/octet-stream"
     try:
         result = await asyncio.to_thread(put_object, path, data, content_type)
     except Exception as e:
@@ -1245,7 +1307,118 @@ async def delete_event(event_id: str, user: dict = Depends(require_roles("owner"
 
 
 # ---------------------------------------------------------------------------
-# Admin / team management (owner only)
+# Todos
+# ---------------------------------------------------------------------------
+@api_router.get("/todos")
+async def list_todos(user: dict = Depends(get_current_user)):
+    uid = str(user["_id"])
+    role = user.get("role")
+    if role == "owner":
+        todos = await db.todos.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    else:
+        todos = await db.todos.find(
+            {"$or": [{"assigned_to": uid}, {"created_by": uid}, {"assigned_to": None}]},
+            {"_id": 0},
+        ).sort("created_at", -1).to_list(500)
+    return todos
+
+
+@api_router.post("/todos")
+async def create_todo(req: TodoCreate, user: dict = Depends(get_current_user)):
+    blocked = _contains_blocked_content(req.title)
+    if blocked:
+        raise HTTPException(status_code=400, detail="Title contains inappropriate content.")
+    blocked = _contains_blocked_content(req.description)
+    if blocked:
+        raise HTTPException(status_code=400, detail="Description contains inappropriate content.")
+    todo = {
+        "id": str(uuid.uuid4()),
+        "title": req.title.strip(),
+        "description": req.description.strip(),
+        "deadline": req.deadline,
+        "assigned_to": req.assigned_to,
+        "created_by": str(user["_id"]),
+        "creator_name": user.get("name", ""),
+        "completed": False,
+        "reminder_sent": False,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.todos.insert_one(dict(todo))
+    todo.pop("_id", None)
+    return todo
+
+
+@api_router.put("/todos/{todo_id}")
+async def update_todo(todo_id: str, req: TodoUpdate, user: dict = Depends(get_current_user)):
+    existing = await db.todos.find_one({"id": todo_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Todo not found")
+    uid = str(user["_id"])
+    if existing["created_by"] != uid and user.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Not allowed to edit this todo")
+    updates = {}
+    if req.title is not None:
+        blocked = _contains_blocked_content(req.title)
+        if blocked:
+            raise HTTPException(status_code=400, detail="Title contains inappropriate content.")
+        updates["title"] = req.title.strip()
+    if req.description is not None:
+        blocked = _contains_blocked_content(req.description)
+        if blocked:
+            raise HTTPException(status_code=400, detail="Description contains inappropriate content.")
+        updates["description"] = req.description.strip()
+    if req.deadline is not None:
+        updates["deadline"] = req.deadline
+    if req.assigned_to is not None:
+        updates["assigned_to"] = req.assigned_to if req.assigned_to else None
+    if req.completed is not None:
+        updates["completed"] = req.completed
+    if updates:
+        await db.todos.update_one({"id": todo_id}, {"$set": updates})
+    updated = await db.todos.find_one({"id": todo_id}, {"_id": 0})
+    return updated
+
+
+@api_router.delete("/todos/{todo_id}")
+async def delete_todo(todo_id: str, user: dict = Depends(get_current_user)):
+    existing = await db.todos.find_one({"id": todo_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Todo not found")
+    uid = str(user["_id"])
+    if existing["created_by"] != uid and user.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Not allowed to delete this todo")
+    await db.todos.delete_one({"id": todo_id})
+    return {"ok": True}
+
+
+async def check_todo_reminders():
+    now = datetime.now(timezone.utc)
+    one_hour_later = now + timedelta(hours=1)
+    upcoming = await db.todos.find({
+        "completed": False,
+        "reminder_sent": False,
+        "deadline": {"$ne": None},
+    }).to_list(200)
+    for todo in upcoming:
+        try:
+            deadline = datetime.fromisoformat(todo["deadline"].replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            continue
+        if now <= deadline <= one_hour_later:
+            assigned = todo.get("assigned_to") or todo.get("created_by")
+            if assigned:
+                payload = {
+                    "title": "Task Due Soon",
+                    "body": f'"{todo["title"]}" is due within 1 hour!',
+                    "url": "/todos",
+                    "tag": f"todo-reminder-{todo['id']}",
+                }
+                await _push_to_user(assigned, payload)
+            await db.todos.update_one({"id": todo["id"]}, {"$set": {"reminder_sent": True}})
+
+
+# ---------------------------------------------------------------------------
+# Admin / team management (owner only — only the owner can change permissions)
 # ---------------------------------------------------------------------------
 @api_router.get("/users")
 async def list_users(user: dict = Depends(require_roles("owner"))):
@@ -1475,9 +1648,15 @@ async def startup():
             CronTrigger(day_of_week="wed", hour=10, minute=0, timezone="America/Phoenix"),
             id="weekly_digest", replace_existing=True,
         )
+        scheduler.add_job(
+            check_todo_reminders,
+            IntervalTrigger(minutes=15),
+            id="todo_reminders", replace_existing=True,
+        )
         scheduler.start()
         app.state.scheduler = scheduler
         logger.info("Weekly digest scheduler started (Wed 10:00 America/Phoenix)")
+        logger.info("Todo reminder scheduler started (every 15 min)")
     except Exception as e:
         logger.error(f"Scheduler start failed: {e}")
 

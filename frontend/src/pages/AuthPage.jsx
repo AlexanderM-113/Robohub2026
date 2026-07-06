@@ -146,6 +146,9 @@ export default function AuthPage() {
                     above per the{" "}
                     <Link to="/privacy" className="text-primary underline underline-offset-2 hover:text-primary/80">
                       Privacy Policy
+                    </Link>{" "}and{" "}
+                    <Link to="/terms" className="text-primary underline underline-offset-2 hover:text-primary/80">
+                      Terms of Service
                     </Link>.
                   </span>
                 </label>
@@ -159,6 +162,8 @@ export default function AuthPage() {
 
           <p className="text-center text-xs text-muted-foreground mt-6">
             <Link to="/privacy" className="underline underline-offset-2 hover:text-foreground">Privacy Policy</Link>
+            {" · "}
+            <Link to="/terms" className="underline underline-offset-2 hover:text-foreground">Terms of Service</Link>
           </p>
         </div>
       </div>
