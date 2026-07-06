@@ -1,5 +1,7 @@
-from dotenv import load_dotenv
 from pathlib import Path
+import os
+
+from dotenv import load_dotenv
 
 ROOT_DIR = Path(__file__).parent
 # Only load .env if it exists AND no VAPID keys are set in environment
@@ -7,14 +9,12 @@ ROOT_DIR = Path(__file__).parent
 if not (os.environ.get('VAPID_PRIVATE_KEY_B64') or os.environ.get('VAPID_PRIVATE_KEY')):
     load_dotenv(ROOT_DIR / '.env')
 
-import os
 import re
 import json
 import base64
 import uuid
 import logging
 import asyncio
-import tempfile
 import secrets as pysecrets
 from datetime import datetime, timezone, timedelta
 
@@ -23,7 +23,9 @@ import bcrypt
 import requests
 import resend
 from pywebpush import webpush, WebPushException
+from py_vapid import Vapid01 as Vapid
 from cryptography.fernet import Fernet, InvalidToken
+from cryptography.hazmat.primitives import serialization
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -80,27 +82,59 @@ VAPID_PUBLIC_KEY = os.environ.get('VAPID_PUBLIC_KEY', '')
 VAPID_PRIVATE_KEY_B64 = os.environ.get('VAPID_PRIVATE_KEY_B64', '')
 VAPID_PRIVATE_KEY = os.environ.get('VAPID_PRIVATE_KEY', '')
 VAPID_CLAIM_EMAIL = os.environ.get('VAPID_CLAIM_EMAIL', 'mailto:admin@example.com')
-VAPID_PEM_PATH = str(Path(tempfile.gettempdir()) / 'robotics-hub-vapid_private.pem')
 
 
-def _load_vapid_private_key_bytes() -> bytes | None:
+def _b64pad(value: str) -> str:
+    return value + "=" * (-len(value) % 4)
+
+
+def _load_vapid_from_value(raw: str) -> Vapid:
+    raw = raw.strip()
+    if "BEGIN" in raw and "PRIVATE KEY" in raw:
+        return Vapid.from_pem(raw.encode("utf-8"))
+    for decoder in (
+        base64.b64decode,
+        lambda value: base64.urlsafe_b64decode(_b64pad(value)),
+    ):
+        try:
+            data = decoder(raw)
+        except Exception:
+            continue
+        if b"BEGIN" in data and b"PRIVATE KEY" in data:
+            return Vapid.from_pem(data)
+        if len(data) == 32:
+            return Vapid.from_raw(raw.encode("utf-8"))
+        try:
+            return Vapid.from_der(raw.encode("utf-8"))
+        except Exception:
+            pass
+    return Vapid.from_string(private_key=raw)
+
+
+def _load_vapid() -> Vapid | None:
     for raw in (VAPID_PRIVATE_KEY_B64, VAPID_PRIVATE_KEY):
         if not raw:
             continue
-        if "BEGIN" in raw:
-            pem = raw.encode("utf-8")
-            if b"PRIVATE KEY" in pem:
-                return pem
         try:
-            pem = base64.b64decode(raw)
-            if b"BEGIN" in pem and b"PRIVATE KEY" in pem:
-                return pem
-        except Exception:
-            pass
+            return _load_vapid_from_value(raw)
+        except Exception as e:
+            logging.getLogger("robotics-hub").exception(f"[vapid] load failed for configured private key: {e}")
     return None
 
 
-_vapid_private_key_bytes = _load_vapid_private_key_bytes()
+def _vapid_public_key_b64url(vapid: Vapid) -> str:
+    return base64.urlsafe_b64encode(
+        vapid.public_key.public_bytes(
+            serialization.Encoding.X962,
+            serialization.PublicFormat.UncompressedPoint,
+        )
+    ).rstrip(b"=").decode("utf-8")
+
+
+_vapid = _load_vapid()
+_vapid_public_key_match: bool | None = None
+if _vapid and VAPID_PUBLIC_KEY:
+    _vapid_public_key_match = _vapid_public_key_b64url(_vapid) == VAPID_PUBLIC_KEY.replace("=", "")
 
 # US carrier email-to-SMS gateways (free, best-effort)
 CARRIER_GATEWAYS = {
@@ -142,6 +176,11 @@ def decrypt_field(ciphertext: str) -> str:
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("robotics-hub")
+if _vapid and VAPID_PUBLIC_KEY:
+    if _vapid_public_key_match:
+        logger.info("[vapid] loaded, public key matches")
+    else:
+        logger.error("[vapid] PUBLIC/PRIVATE KEY MISMATCH public key does not match loaded private key")
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
@@ -355,14 +394,14 @@ def _send_webpush_sync(subscription_info: dict, payload: dict):
     if not VAPID_PUBLIC_KEY:
         logger.info("[webpush skipped] VAPID_PUBLIC_KEY not set")
         return False
-    if not _vapid_private_key_bytes or not os.path.exists(VAPID_PEM_PATH):
-        logger.info("[webpush skipped] no VAPID private key available (temp PEM missing)")
+    if not _vapid:
+        logger.info("[webpush skipped] no usable VAPID private key")
         return False
     try:
         webpush(
             subscription_info=subscription_info,
             data=json.dumps(payload),
-            vapid_private_key=VAPID_PEM_PATH,
+            vapid_private_key=_vapid,
             vapid_claims={"sub": VAPID_CLAIM_EMAIL},
         )
         logger.info(f"[webpush sent] endpoint={subscription_info.get('endpoint', '')[:60]}")
@@ -821,6 +860,19 @@ async def push_status(endpoint: Optional[str] = None, user: dict = Depends(get_c
     return {"device_count": count, "subscribed": subscribed}
 
 
+@api_router.get("/push/debug")
+async def push_debug(user: dict = Depends(require_roles("owner"))):
+    subscription_count = await db.push_subscriptions.count_documents({})
+    return {
+        "public_key_set": bool(VAPID_PUBLIC_KEY),
+        "private_key_loaded": bool(_vapid),
+        "public_private_match": _vapid_public_key_match,
+        "vapid_public_key_prefix": VAPID_PUBLIC_KEY[:12],
+        "subscription_count": subscription_count,
+        "claim_email": VAPID_CLAIM_EMAIL,
+    }
+
+
 @api_router.post("/digest/send-now")
 async def send_digest_now(user: dict = Depends(require_roles("owner"))):
     """Owner-only: trigger the weekly digest immediately (for testing/manual sends)."""
@@ -1259,16 +1311,10 @@ async def root():
 async def startup():
     await db.users.create_index("email", unique=True)
     await db.push_subscriptions.create_index("endpoint", unique=True)
-    # Write VAPID private key PEM to a writable temp path for pywebpush
-    if _vapid_private_key_bytes:
-        try:
-            with open(VAPID_PEM_PATH, "wb") as fh:
-                fh.write(_vapid_private_key_bytes)
-            logger.info("VAPID key ready")
-        except Exception as e:
-            logger.error(f"VAPID key write failed: {e}")
+    if _vapid:
+        logger.info("[vapid] ready")
     else:
-        logger.info("[webpush skipped] no VAPID private key env var found")
+        logger.info("[webpush disabled] no VAPID key configured")
     # Seed owner
     existing = await db.users.find_one({"email": OWNER_EMAIL})
     if existing is None:

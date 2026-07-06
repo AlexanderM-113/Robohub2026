@@ -34,7 +34,7 @@ services:
         value: notify@sabercats4146.com
       - key: VAPID_PUBLIC_KEY
         sync: false
-      - key: VAPID_PRIVATE_KEY_B64
+      - key: VAPID_PRIVATE_KEY_B64   # accepts raw base64url 32-byte keys, PEM text, or base64-PEM
         sync: false
       - key: VAPID_PRIVATE_KEY      # optional alias: raw PEM or base64 PEM
         sync: false
