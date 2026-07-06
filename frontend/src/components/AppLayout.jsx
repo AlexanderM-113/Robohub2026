@@ -2,7 +2,7 @@ import { useState } from "react";
 import { NavLink, useNavigate, Outlet } from "react-router-dom";
 import {
   LayoutDashboard, MessagesSquare, FolderOpen, CalendarDays,
-  Settings, Users, LogOut, Menu, X,
+  Settings, Users, LogOut, Menu, X, ListTodo,
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import logo from "@/assets/logo.webp";
@@ -21,6 +21,7 @@ const nav = [
   { to: "/chat", label: "Chat", icon: MessagesSquare, testid: "nav-chat" },
   { to: "/files", label: "Files", icon: FolderOpen, testid: "nav-files" },
   { to: "/calendar", label: "Calendar", icon: CalendarDays, testid: "nav-calendar" },
+  { to: "/todos", label: "To-Do", icon: ListTodo, testid: "nav-todos" },
   { to: "/settings", label: "Settings", icon: Settings, testid: "nav-settings" },
 ];
 
@@ -31,7 +32,7 @@ export function AppLayout() {
 
   const items = [...nav];
   if (user?.role === "owner") {
-    items.splice(4, 0, { to: "/team", label: "Team", icon: Users, testid: "nav-team" });
+    items.splice(5, 0, { to: "/team", label: "Team", icon: Users, testid: "nav-team" });
   }
 
   const handleLogout = async () => {

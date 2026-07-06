@@ -80,13 +80,32 @@ export default function PrivacyPolicy() {
           </section>
 
           <section>
-            <h2 className="text-xl font-semibold mt-8 mb-3">6. CIPA Compliance</h2>
+            <h2 className="text-xl font-semibold mt-8 mb-3">6. Content Restrictions and Moderation</h2>
+            <p>
+              To maintain a safe environment suitable for all ages, the App enforces strict content policies:
+            </p>
+            <ul className="list-disc pl-6 space-y-1">
+              <li><strong>Automated filtering:</strong> Messages and content are automatically screened for profanity, swear words, slurs, sexual innuendos, and other inappropriate language. Content that violates these rules is blocked before it can be posted.</li>
+              <li><strong>File restrictions:</strong> Uploads with inappropriate file names or prohibited file types are rejected. Images and videos with explicit or 18+ content are not permitted.</li>
+              <li><strong>Manual moderation:</strong> The team owner and mentors can delete any message or file at any time. The team owner may remove users who repeatedly violate content policies.</li>
+              <li><strong>Scope of filtering:</strong> Content filtering applies to all channel messages, direct messages, file uploads, and task/to-do entries.</li>
+            </ul>
+            <p className="mt-3">
+              These restrictions exist to comply with COPPA and CIPA requirements and to ensure the App
+              remains appropriate for student team members of all ages. See our{" "}
+              <Link to="/terms" className="text-primary hover:underline">Terms of Service</Link> for the full list of prohibited content.
+            </p>
+          </section>
+
+          <section>
+            <h2 className="text-xl font-semibold mt-8 mb-3">7. CIPA Compliance</h2>
             <p>
               This application is designed to be compatible with school internet filtering and safety policies
               under the Children's Internet Protection Act (CIPA):
             </p>
             <ul className="list-disc pl-6 space-y-1">
               <li>Content is restricted to team-related communications only</li>
+              <li>Automated content filtering blocks profanity, sexual content, and other inappropriate material</li>
               <li>Team owners and mentors can moderate and delete any message or file</li>
               <li>The application does not link to or display external advertising or unfiltered content</li>
               <li>All access requires authentication and team-owner approval</li>
@@ -94,7 +113,7 @@ export default function PrivacyPolicy() {
           </section>
 
           <section>
-            <h2 className="text-xl font-semibold mt-8 mb-3">7. Your Rights</h2>
+            <h2 className="text-xl font-semibold mt-8 mb-3">8. Your Rights</h2>
             <p>You (or your parent/guardian if you are under 13) have the right to:</p>
             <ul className="list-disc pl-6 space-y-1">
               <li><strong>Access</strong> your personal data through the Settings page</li>
@@ -105,7 +124,7 @@ export default function PrivacyPolicy() {
           </section>
 
           <section>
-            <h2 className="text-xl font-semibold mt-8 mb-3">8. Data Retention</h2>
+            <h2 className="text-xl font-semibold mt-8 mb-3">9. Data Retention</h2>
             <p>
               Data is retained for the duration of your team membership. When your account is deleted
               (either by you or the team owner), all associated data including messages, direct messages,
@@ -114,12 +133,16 @@ export default function PrivacyPolicy() {
           </section>
 
           <section>
-            <h2 className="text-xl font-semibold mt-8 mb-3">9. Contact</h2>
+            <h2 className="text-xl font-semibold mt-8 mb-3">10. Contact</h2>
             <p>
               For questions about this privacy policy or to exercise your data rights, contact the
               team owner through the Robotics Hub application or your school's robotics program coordinator.
             </p>
           </section>
+        </div>
+
+        <div className="mt-8 pt-6 border-t border-border text-sm text-muted-foreground">
+          <Link to="/terms" className="hover:underline">Terms of Service</Link>
         </div>
       </div>
     </div>
