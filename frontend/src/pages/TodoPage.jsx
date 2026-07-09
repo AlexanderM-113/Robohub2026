@@ -48,7 +48,7 @@ export default function TodoPage() {
 
   async function fetchTodos() {
     try {
-      const res = await api.get("/api/todos");
+      const res = await api.get("/todos");
       setTodos(res.data);
     } catch (e) {
       toast.error(formatApiErrorDetail(e) || "Failed to load todos");
@@ -59,7 +59,7 @@ export default function TodoPage() {
 
   async function fetchMembers() {
     try {
-      const res = await api.get("/api/users");
+      const res = await api.get("/users");
       setMembers(res.data);
     } catch {}
   }
@@ -74,8 +74,8 @@ export default function TodoPage() {
         deadline: form.deadline || null,
         assigned_to: form.assigned_to || null,
       };
-      const res = await api.post("/api/todos", payload);
-      setTodos([res.data, ...todos]);
+      const res = await api.post("/todos", payload);
+      setTodos((cur) => [res.data, ...cur]);
       setForm(empty);
       setOpen(false);
       toast.success("Task created");
@@ -88,8 +88,8 @@ export default function TodoPage() {
 
   async function toggleComplete(todo) {
     try {
-      const res = await api.put(`/api/todos/${todo.id}`, { completed: !todo.completed });
-      setTodos(todos.map((t) => (t.id === todo.id ? res.data : t)));
+      const res = await api.put(`/todos/${todo.id}`, { completed: !todo.completed });
+      setTodos((cur) => cur.map((t) => (t.id === todo.id ? res.data : t)));
     } catch (e) {
       toast.error(formatApiErrorDetail(e) || "Failed to update");
     }
@@ -97,8 +97,8 @@ export default function TodoPage() {
 
   async function handleDelete(id) {
     try {
-      await api.delete(`/api/todos/${id}`);
-      setTodos(todos.filter((t) => t.id !== id));
+      await api.delete(`/todos/${id}`);
+      setTodos((cur) => cur.filter((t) => t.id !== id));
       toast.success("Task deleted");
     } catch (e) {
       toast.error(formatApiErrorDetail(e) || "Failed to delete");
