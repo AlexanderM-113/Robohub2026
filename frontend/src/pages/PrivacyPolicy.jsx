@@ -70,7 +70,7 @@ export default function PrivacyPolicy() {
               robotics team. In accordance with the Children's Online Privacy Protection Act (COPPA):
             </p>
             <ul className="list-disc pl-6 space-y-1">
-              <li>Account creation requires approval by the team owner (a school-authorized adult)</li>
+              <li>Account creation requires approval by the system owner</li>
               <li>The school or team organization acts as the consenting agent on behalf of parents/guardians for educational use, in accordance with the FTC's COPPA school consent exception</li>
               <li>We collect only the minimum information necessary for team operations</li>
               <li>We do not use personal information for advertising, profiling, or behavioral targeting</li>
