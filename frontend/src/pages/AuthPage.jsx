@@ -12,7 +12,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "sonner";
 
 const HERO =
-  "https://images.unsplash.com/photo-1658584124309-768111d9c5db?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NzB8MHwxfHNlYXJjaHwyfHx0ZWVuYWdlcnMlMjBidWlsZGluZyUyMHJvYm90fGVufDB8fHx8MTc4MTY5NzYxMnww&ixlib=rb-4.1.0&q=85";
+  "https://images.unsplash.com/photo-1615551043360-33de8b5f410c?q=80&w=876&auto=format&fit=crop&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D";
 
 export default function AuthPage() {
   const { signIn } = useAuth();
