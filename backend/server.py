@@ -1771,30 +1771,30 @@ async def startup():
         logger.error(f"Scheduler start failed: {e}")
 
 
-# Simple CORS config: allow explicit origins from env (comma list).
-# We default to not allowing cookies (no credentials) because file:// is insecure.
+# ---------------- CORS configuration (ensure this runs BEFORE routes are included) ----------------
+# Read allowed origins from env; if empty, default to allow file:// (Origin "null")
 cors_env = os.environ.get("CORS_ORIGINS", "").strip()
 if cors_env:
     allowed_origins = [o.strip() for o in cors_env.split(",") if o.strip()]
 else:
-    allowed_origins = []
+    # default: allow file:// origin null and the sabercats domain
+    allowed_origins = ["null", "https://sabercats4146.com"]
 
-# Read whether we allow credentials (cookies). For file:// use "false".
+# Allow credentials? For file:// we keep this false (do not use cookies).
 allow_creds = os.environ.get("CORS_ALLOW_CREDENTIALS", "false").lower() in ("1", "true", "yes")
 
-middleware_kwargs = {
-    "allow_credentials": allow_creds,
-    "allow_methods": ["*"],
-    "allow_headers": ["*"],
-}
+# Register CORSMiddleware BEFORE including routes so it attaches headers to redirects and preflight responses.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=allow_creds,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-if allowed_origins:
-    middleware_kwargs["allow_origins"] = allowed_origins
-
-app.add_middleware(CORSMiddleware, **middleware_kwargs)
-
-# Include API routes after middleware registration
+# Now include API router so middleware covers everything
 app.include_router(api_router)
+# -------------------------------------------------------------------------------------------------
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
