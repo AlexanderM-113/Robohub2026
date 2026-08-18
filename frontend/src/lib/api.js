@@ -1,11 +1,23 @@
 import axios from "axios";
 
 // In Electron the preload exposes the local backend port; otherwise use the
-// backend URL baked in at build time (Render/production) and fall back local.
+// backend URL baked in at build time (Render/production). When running from
+// file:// we must point to the deployed backend (no local server).
 const electronPort = typeof window !== "undefined" && window.electronAPI?.backendPort;
-const BACKEND_URL = electronPort
+
+// If running from file:// (the page is opened directly from disk) use the
+// deployed backend URL so the static file can contact the live API.
+const isFileProtocol = typeof window !== "undefined" && window.location.protocol === "file:";
+
+// Default production backend URL (the deployed API).
+const PROD_BACKEND = "https://robohub2026.onrender.com";
+
+const BACKEND_URL = isFileProtocol
+  ? PROD_BACKEND
+  : electronPort
   ? `http://127.0.0.1:${electronPort}`
-  : process.env.REACT_APP_BACKEND_URL || "http://127.0.0.1:54114";
+  : process.env.REACT_APP_BACKEND_URL || PROD_BACKEND;
+
 const API = `${BACKEND_URL}/api`;
 
 export const api = axios.create({ baseURL: API });
