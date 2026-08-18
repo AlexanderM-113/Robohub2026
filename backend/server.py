@@ -1771,15 +1771,31 @@ async def startup():
         logger.error(f"Scheduler start failed: {e}")
 
 
-app.include_router(api_router)
+# CORS: read allowed origins from the CORS_ORIGINS environment variable (comma-separated).
+# If you want credentialed requests (cookies) from the frontend, set CORS_ORIGINS in your Render
+# service to your exact frontend origin(s), e.g. "https://your-frontend.example". Do NOT leave "*"
+# when using credentials.
+cors_env = os.environ.get("CORS_ORIGINS", "").strip()
+if cors_env:
+    # comma-separated list in the env var
+    allowed_origins = [o.strip() for o in cors_env.split(",") if o.strip()]
+else:
+    # fallback to permissive for non-credentialed use; prefer setting CORS_ORIGINS in Render.
+    allowed_origins = ["*"]
 
+# Allow credentials (cookies) by default; set CORS_ALLOW_CREDENTIALS="false" to opt out.
+allow_creds = os.environ.get("CORS_ALLOW_CREDENTIALS", "true").lower() in ("1", "true", "yes")
+
+# Register middleware. CORSMiddleware will attach the correct headers for preflight and redirects.
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=False,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
+    allow_credentials=allow_creds,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Register routes after middleware (ensures middleware covers all responses)
+app.include_router(api_router)
 
 
 @app.on_event("shutdown")
