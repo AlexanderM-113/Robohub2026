@@ -1771,21 +1771,17 @@ async def startup():
         logger.error(f"Scheduler start failed: {e}")
 
 
-# Read CORS config from env
+# Simple CORS config: allow explicit origins from env (comma list).
+# We default to not allowing cookies (no credentials) because file:// is insecure.
 cors_env = os.environ.get("CORS_ORIGINS", "").strip()
 if cors_env:
     allowed_origins = [o.strip() for o in cors_env.split(",") if o.strip()]
 else:
     allowed_origins = []
 
-cors_regex = os.environ.get("CORS_ORIGIN_REGEX", "").strip()  # optional regex pattern
+# Read whether we allow credentials (cookies). For file:// use "false".
+allow_creds = os.environ.get("CORS_ALLOW_CREDENTIALS", "false").lower() in ("1", "true", "yes")
 
-# Allow credentials by default. Set CORS_ALLOW_CREDENTIALS="false" in Render to opt out.
-allow_creds = os.environ.get("CORS_ALLOW_CREDENTIALS", "true").lower() in ("1", "true", "yes")
-
-# Register CORS middleware. Use allow_origin_regex when provided so you don't need to enumerate origins.
-# NOTE: If you leave allowed_origins empty and do NOT provide cors_regex, this will be permissive only
-# for non-credentialed requests. If allow_creds is True you MUST provide either allowed_origins or cors_regex.
 middleware_kwargs = {
     "allow_credentials": allow_creds,
     "allow_methods": ["*"],
@@ -1794,8 +1790,6 @@ middleware_kwargs = {
 
 if allowed_origins:
     middleware_kwargs["allow_origins"] = allowed_origins
-if cors_regex:
-    middleware_kwargs["allow_origin_regex"] = cors_regex
 
 app.add_middleware(CORSMiddleware, **middleware_kwargs)
 
