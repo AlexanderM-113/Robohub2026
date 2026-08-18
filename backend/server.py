@@ -1771,32 +1771,36 @@ async def startup():
         logger.error(f"Scheduler start failed: {e}")
 
 
-# CORS: read allowed origins from the CORS_ORIGINS environment variable (comma-separated).
-# If you want credentialed requests (cookies) from the frontend, set CORS_ORIGINS in your Render
-# service to your exact frontend origin(s), e.g. "https://your-frontend.example". Do NOT leave "*"
-# when using credentials.
+# Read CORS config from env
 cors_env = os.environ.get("CORS_ORIGINS", "").strip()
 if cors_env:
-    # comma-separated list in the env var
     allowed_origins = [o.strip() for o in cors_env.split(",") if o.strip()]
 else:
-    # fallback to permissive for non-credentialed use; prefer setting CORS_ORIGINS in Render.
-    allowed_origins = ["*"]
+    allowed_origins = []
 
-# Allow credentials (cookies) by default; set CORS_ALLOW_CREDENTIALS="false" to opt out.
+cors_regex = os.environ.get("CORS_ORIGIN_REGEX", "").strip()  # optional regex pattern
+
+# Allow credentials by default. Set CORS_ALLOW_CREDENTIALS="false" in Render to opt out.
 allow_creds = os.environ.get("CORS_ALLOW_CREDENTIALS", "true").lower() in ("1", "true", "yes")
 
-# Register middleware. CORSMiddleware will attach the correct headers for preflight and redirects.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=allowed_origins,
-    allow_credentials=allow_creds,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-# Register routes after middleware (ensures middleware covers all responses)
-app.include_router(api_router)
+# Register CORS middleware. Use allow_origin_regex when provided so you don't need to enumerate origins.
+# NOTE: If you leave allowed_origins empty and do NOT provide cors_regex, this will be permissive only
+# for non-credentialed requests. If allow_creds is True you MUST provide either allowed_origins or cors_regex.
+middleware_kwargs = {
+    "allow_credentials": allow_creds,
+    "allow_methods": ["*"],
+    "allow_headers": ["*"],
+}
 
+if allowed_origins:
+    middleware_kwargs["allow_origins"] = allowed_origins
+if cors_regex:
+    middleware_kwargs["allow_origin_regex"] = cors_regex
+
+app.add_middleware(CORSMiddleware, **middleware_kwargs)
+
+# Include API routes after middleware registration
+app.include_router(api_router)
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
